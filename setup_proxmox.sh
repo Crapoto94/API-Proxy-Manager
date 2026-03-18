@@ -18,6 +18,10 @@ if ! [ -x "$(command -v docker-compose)" ]; then
   sudo apt-get install -y docker-compose
 fi
 
+# Nettoyage si un ancien conteneur nommé 'portainer' bloque (optionnel mais conseillé)
+# Si vous avez déjà un portainer, démentez cette ligne ou changez le port dans docker-compose.yml
+# docker rm -f portainer 2>/dev/null
+
 # 2. Récupération de l'adresse IP pour la configuration Frontend
 IP_ADDR=$(hostname -I | awk '{print $1}')
 echo "Adresse IP détectée : $IP_ADDR"
