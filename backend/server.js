@@ -233,12 +233,14 @@ async function startServer() {
     // Dashboard Stats API
     app.get('/api/dashboard/stats', authenticateAdmin, async (req, res) => {
         try {
-            // Simulated / Quick health checks
+            const logStats = await db.get('SELECT COUNT(*) as c FROM proxy_logs');
+            const appCount = await db.get('SELECT COUNT(*) as c FROM external_apps');
+            
             const stats = {
-                requests: 1284, // Would come from a logs table in real usage
+                requests: logStats.c,
                 alerts: 0,
                 latency: '42ms',
-                apps: 8,
+                apps: appCount.c,
                 services: [
                     { name: 'Active Directory', status: 'online', type: 'Auth' },
                     { name: 'SMTP Mail', status: 'online', type: 'Notification' },

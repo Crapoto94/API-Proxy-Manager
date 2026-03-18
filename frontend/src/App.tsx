@@ -57,6 +57,7 @@ const Layout = ({ children, onLogout, user }: { children: React.ReactNode, onLog
           <SidebarLink to="/sql" icon={Search}>SQL Explorer</SidebarLink>
           <SidebarLink to="/users" icon={Users}>Utilisateurs</SidebarLink>
           <SidebarLink to="/apps" icon={Globe}>Applications</SidebarLink>
+          <SidebarLink to="/security" icon={ShieldCheck}>Sécurité & Proxies</SidebarLink>
           <SidebarLink to="/api-docs" icon={Database}>Documentation API</SidebarLink>
         </nav>
 
@@ -122,6 +123,7 @@ import OracleSettings from './pages/OracleSettings';
 import ApiDocs from './pages/ApiDocs';
 import UserSettings from './pages/UserSettings';
 import AppManagement from './pages/AppManagement';
+import SecuritySettings from './pages/SecuritySettings';
 import Login from './pages/Login';
 
 const App = () => {
@@ -167,6 +169,7 @@ const App = () => {
           <Route path="/sql" element={<AdminSQL />} />
           <Route path="/users" element={<UserSettings />} />
           <Route path="/apps" element={<AppManagement />} />
+          <Route path="/security" element={<SecuritySettings />} />
           <Route path="/api-docs" element={<ApiDocs />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

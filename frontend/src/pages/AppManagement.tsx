@@ -13,10 +13,12 @@ import {
   ShieldCheck,
   Smartphone,
   Mail,
-  Loader2
+  Loader2,
+  Power
 } from 'lucide-react';
+import { API_BASE_URL } from '../config';
 
-const API_BASE = 'http://localhost:8001/api/admin/external';
+const API_BASE = `${API_BASE_URL}/api/admin/external`;
 
 interface ExternalApp {
   id: number;
@@ -80,6 +82,15 @@ const AppManagement: React.FC = () => {
             fetchApps();
         } catch (err) {
             alert('Erreur de suppression');
+        }
+    };
+
+    const handleToggleApp = async (id: number) => {
+        try {
+            await axios.put(`${API_BASE}/apps/${id}/toggle`);
+            fetchApps();
+        } catch (err) {
+            alert('Erreur lors du changement de statut');
         }
     };
 
@@ -164,23 +175,45 @@ const AppManagement: React.FC = () => {
                     ) : (
                         filteredApps.map(app => (
                             <div key={app.id} className="group p-6 rounded-[2rem] border border-slate-100 bg-slate-50/50 hover:bg-white hover:border-blue-200 hover:shadow-xl hover:shadow-blue-500/5 transition-all flex items-center justify-between">
-                                <div className="flex items-center gap-6">
-                                    <div className="w-14 h-14 rounded-2xl bg-white border border-slate-200 flex items-center justify-center text-slate-600 shadow-sm group-hover:bg-blue-600 group-hover:text-white group-hover:border-blue-500 transition-all">
-                                        <Globe size={24} />
-                                    </div>
-                                    <div>
-                                        <h4 className="text-lg font-black text-slate-900">{app.name}</h4>
-                                        <div className="flex items-center gap-3 mt-1.5">
-                                            <div className="flex items-center gap-1.5 bg-white px-3 py-1 rounded-lg border border-slate-200 font-mono text-[11px] font-bold text-slate-500">
-                                                <Key size={12} />
-                                                <span>{app.api_key.substring(0, 8)}...{app.api_key.substring(app.api_key.length - 8)}</span>
+                                    <div className="flex items-center gap-6">
+                                        <div className={`w-14 h-14 rounded-2xl border flex items-center justify-center shadow-sm transition-all ${
+                                            app.is_active === 1 
+                                                ? 'bg-white border-slate-200 text-slate-600 group-hover:bg-blue-600 group-hover:text-white group-hover:border-blue-500' 
+                                                : 'bg-slate-100 border-slate-200 text-slate-400 grayscale'
+                                        }`}>
+                                            <Globe size={24} />
+                                        </div>
+                                        <div>
+                                            <div className="flex items-center gap-3">
+                                                <h4 className={`text-lg font-black ${app.is_active === 1 ? 'text-slate-900' : 'text-slate-400'}`}>{app.name}</h4>
+                                                {app.is_active === 0 && (
+                                                    <span className="px-2 py-0.5 rounded-md bg-slate-200 text-slate-500 text-[10px] font-bold uppercase">Inactif</span>
+                                                )}
                                             </div>
-                                            <p className="text-[10px] font-black text-slate-400 uppercase">Créée le {new Date(app.created_at).toLocaleDateString()}</p>
+                                            <div className="flex items-center gap-3 mt-1.5">
+                                                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-lg border font-mono text-[11px] font-bold ${
+                                                    app.is_active === 1 ? 'bg-white border-slate-200 text-slate-500' : 'bg-slate-100 border-slate-200 text-slate-400'
+                                                }`}>
+                                                    <Key size={12} />
+                                                    <span>{app.api_key.substring(0, 8)}...{app.api_key.substring(app.api_key.length - 8)}</span>
+                                                </div>
+                                                <p className="text-[10px] font-black text-slate-400 uppercase">Créée le {new Date(app.created_at).toLocaleDateString()}</p>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
 
                                 <div className="flex items-center gap-2">
+                                    <button 
+                                        onClick={() => handleToggleApp(app.id)}
+                                        className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs transition-all ${
+                                            app.is_active === 1 
+                                                ? 'bg-amber-50 text-amber-600 hover:bg-amber-100' 
+                                                : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+                                        }`}
+                                    >
+                                        <Power size={14} />
+                                        <span>{app.is_active === 1 ? 'DÉSACTIVER' : 'ACTIVER'}</span>
+                                    </button>
                                     <button 
                                         onClick={() => fetchLogs(app)}
                                         className="flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs bg-slate-100 text-slate-600 hover:bg-slate-200 transition-all"

@@ -72,13 +72,16 @@ module.exports = function(app, db, authenticateAdmin) {
                 sender: { name: senderName, email: senderEmail },
                 to: [{ email: to }],
                 subject: subject,
-                htmlContent: html,
-                attachment: attachments.map(a => ({
+                htmlContent: html
+            };
+
+            if (attachments.length > 0) {
+                payload.attachment = attachments.map(a => ({
                     content: a.content,
                     name: a.filename,
                     contentId: `<${a.cid}>`
-                }))
-            };
+                }));
+            }
 
             const config = {
                 headers: { 'api-key': apiKey, 'Content-Type': 'application/json' }

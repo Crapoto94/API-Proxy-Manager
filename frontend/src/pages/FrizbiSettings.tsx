@@ -4,6 +4,7 @@ import {
   Smartphone, Shield, CheckCircle2, AlertCircle,
   Send, RefreshCw, Save, Server, Globe, Key, Lock, X
 } from 'lucide-react';
+import { API_BASE_URL } from '../config';
 
 interface FrizbiSettingsData {
   is_enabled: number;
@@ -13,7 +14,7 @@ interface FrizbiSettingsData {
   sender_id: string;
 }
 
-const API_BASE = 'http://localhost:8001/api';
+const API_BASE = `${API_BASE_URL}/api`;
 
 const FrizbiSettings: React.FC = () => {
   const [settings, setSettings] = useState<FrizbiSettingsData>({

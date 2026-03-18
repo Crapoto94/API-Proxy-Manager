@@ -10,26 +10,33 @@ const crypto = require('crypto');
  */
 
 module.exports = (app, db, authenticateAdmin) => {
-    const router = express.Router();
+    const proxyRouter = express.Router();
+    const adminRouter = express.Router();
 
-    // --- Middleware: Verify API Key ---
-    const logRequest = async (req, status) => {
-        if (!req.externalApp) return;
-        try {
-            await db.run(
+    // --- Middleware: Global Proxy Logger (External APIs only) ---
+    const proxyLogger = async (req, res, next) => {
+        const originalJson = res.json;
+
+        res.json = function(data) {
+            const status = res.statusCode;
+            const appEntry = req.externalApp || null;
+            
+            // Log for external proxy routes
+            db.run(
                 'INSERT INTO proxy_logs (app_id, endpoint, method, query_params, payload, status) VALUES (?, ?, ?, ?, ?, ?)',
                 [
-                    req.externalApp.id, 
-                    req.path, 
-                    req.method, 
-                    JSON.stringify(req.query || {}), 
-                    JSON.stringify(req.body || {}), 
+                    appEntry ? appEntry.id : null,
+                    req.originalUrl || req.path,
+                    req.method,
+                    JSON.stringify(req.query || {}),
+                    JSON.stringify(req.body || {}),
                     status
                 ]
-            );
-        } catch (e) {
-            console.error('[PROXY LOG] Failed to log request:', e.message);
-        }
+            ).catch(e => console.error('[PROXY LOG ERROR]:', e.message));
+
+            return originalJson.apply(res, arguments);
+        };
+        next();
     };
 
     const verifyApiKey = async (req, res, next) => {
@@ -39,24 +46,33 @@ module.exports = (app, db, authenticateAdmin) => {
         }
 
         try {
+            const appSettings = await db.get('SELECT * FROM security_settings WHERE id = 1');
+            const trustProxiesEnabled = appSettings ? appSettings.trust_proxies_enabled === 1 : false;
+
+            if (trustProxiesEnabled) {
+                const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || req.ip;
+                const normalizedIp = clientIp.includes('::ffff:') ? clientIp.split('::ffff:')[1] : clientIp;
+
+                const isTrusted = await db.get('SELECT * FROM trusted_ips WHERE ip_address = ? OR ip_address = ?', [clientIp, normalizedIp]);
+                
+                if (!isTrusted) {
+                    console.warn(`[SECURITY] Blocked proxy request from untrusted IP: ${normalizedIp}`);
+                    return res.status(403).json({ error: 'IP Address not trusted' });
+                }
+            }
+
             const appEntry = await db.get('SELECT * FROM external_apps WHERE api_key = ? AND is_active = 1', [apiKey]);
             if (!appEntry) {
                 return res.status(401).json({ error: 'Invalid or inactive API Key' });
             }
             req.externalApp = appEntry;
-            
-            // Override res.json to auto-log status
-            const originalJson = res.json;
-            res.json = function(data) {
-                logRequest(req, res.statusCode);
-                return originalJson.apply(res, arguments);
-            };
-            
             next();
         } catch (error) {
             res.status(500).json({ error: 'Internal auth error' });
         }
     };
+
+    proxyRouter.use(proxyLogger);
 
     // --- Helper: Frizbi Login ---
     async function getFrizbiToken() {
@@ -98,7 +114,7 @@ module.exports = (app, db, authenticateAdmin) => {
      *       200:
      *         description: SMS envoyé
      */
-    router.post('/sms/send', verifyApiKey, async (req, res) => {
+    proxyRouter.post('/sms/send', verifyApiKey, async (req, res) => {
         const { mobile, message } = req.body;
         if (!mobile || !message) {
             return res.status(400).json({ error: 'mobile and message are required' });
@@ -167,14 +183,13 @@ module.exports = (app, db, authenticateAdmin) => {
      *       200:
      *         description: Email envoyé
      */
-    router.post('/mail/send', verifyApiKey, async (req, res) => {
+    proxyRouter.post('/mail/send', verifyApiKey, async (req, res) => {
         const { to, subject, content, from_name, from_email, is_raw } = req.body;
         if (!to || !subject || !content) {
             return res.status(400).json({ error: 'to, subject and content are required' });
         }
 
         try {
-            // Use app.locals.sendMail if registered, or implement local call
             if (app.locals.sendMail) {
                 await app.locals.sendMail(to, subject, content, {
                     fromName: from_name,
@@ -211,7 +226,7 @@ module.exports = (app, db, authenticateAdmin) => {
      *       200:
      *         description: Utilisateur trouvé
      */
-    router.get('/ad/search', verifyApiKey, async (req, res) => {
+    proxyRouter.get('/ad/search', verifyApiKey, async (req, res) => {
         const { q } = req.query;
         if (!q) return res.status(400).json({ error: 'Query parameter q is required' });
 
@@ -263,7 +278,7 @@ module.exports = (app, db, authenticateAdmin) => {
      *       200:
      *         description: Authentification réussie
      */
-    router.post('/ad/authenticate', verifyApiKey, async (req, res) => {
+    proxyRouter.post('/ad/authenticate', verifyApiKey, async (req, res) => {
         const { username, password } = req.body;
         const ldap = require('ldapjs');
         const config = await db.get('SELECT * FROM ad_settings WHERE id = 1 AND is_enabled = 1');
@@ -307,7 +322,7 @@ module.exports = (app, db, authenticateAdmin) => {
      *       200:
      *         description: Utilisateur trouvé
      */
-    router.get('/azure/search', verifyApiKey, async (req, res) => {
+    proxyRouter.get('/azure/search', verifyApiKey, async (req, res) => {
         const { q } = req.query;
         try {
             const settings = await db.get('SELECT * FROM azure_ad_settings WHERE id = 1 AND is_enabled = 1');
@@ -333,8 +348,6 @@ module.exports = (app, db, authenticateAdmin) => {
             res.status(500).json({ error: error.message });
         }
     });
-
-
 
     // --- Database: Oracle ---
     const oracledb = require('oracledb');
@@ -373,7 +386,7 @@ module.exports = (app, db, authenticateAdmin) => {
      *       200:
      *         description: Résultats de la requête
      */
-    router.post('/oracle/query', verifyApiKey, async (req, res) => {
+    proxyRouter.post('/oracle/query', verifyApiKey, async (req, res) => {
         const { type, sql } = req.body;
         if (!type || !sql) return res.status(400).json({ error: 'type and sql are required' });
         if (!sql.trim().toLowerCase().startsWith('select')) {
@@ -412,29 +425,25 @@ module.exports = (app, db, authenticateAdmin) => {
      *       200:
      *         description: Synchronisation lancée
      */
-    router.post('/oracle/sync/:type', verifyApiKey, async (req, res) => {
+    proxyRouter.post('/oracle/sync/:type', verifyApiKey, async (req, res) => {
         const { type } = req.params;
         try {
-            // Forward to the internal admin API or call helper
-            const response = await axios.post(`http://localhost:8001/api/oracle/import-tables`, { type }, {
-                headers: { 'Authorization': req.headers.authorization } // This might fail if called from external
+            await axios.post(`http://localhost:8001/api/oracle/import-tables`, { type }, {
+                headers: { 'Authorization': req.headers.authorization }
             });
-            // Alternative: Trigger logic directly if possible, or use a secret internal token
             res.json({ status: 'triggered', type });
         } catch (error) {
-            // Direct logic if axios call to self is complex in this context
-            console.log(`[PROXY SYNC] Triggered sync for ${type} by ${req.externalApp.name}`);
             res.json({ status: 'accepted', message: 'Sync request received' });
         }
     });
 
     // --- Admin APIs for External Apps ---
-    router.get('/apps', authenticateAdmin, async (req, res) => {
+    adminRouter.get('/apps', authenticateAdmin, async (req, res) => {
         const apps = await db.all('SELECT * FROM external_apps');
         res.json(apps);
     });
 
-    router.post('/apps', authenticateAdmin, async (req, res) => {
+    adminRouter.post('/apps', authenticateAdmin, async (req, res) => {
         const { name } = req.body;
         const apiKey = crypto.randomBytes(32).toString('hex');
         try {
@@ -445,12 +454,25 @@ module.exports = (app, db, authenticateAdmin) => {
         }
     });
 
-    router.delete('/apps/:id', authenticateAdmin, async (req, res) => {
+    adminRouter.put('/apps/:id/toggle', authenticateAdmin, async (req, res) => {
+        try {
+            const current = await db.get('SELECT is_active FROM external_apps WHERE id = ?', [req.params.id]);
+            if (!current) return res.status(404).json({ error: 'App not found' });
+            
+            const newState = current.is_active === 1 ? 0 : 1;
+            await db.run('UPDATE external_apps SET is_active = ? WHERE id = ?', [newState, req.params.id]);
+            res.json({ id: req.params.id, is_active: newState });
+        } catch (e) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    adminRouter.delete('/apps/:id', authenticateAdmin, async (req, res) => {
         await db.run('DELETE FROM external_apps WHERE id = ?', [req.params.id]);
         res.json({ message: 'App deleted' });
     });
 
-    router.get('/apps/:id/logs', authenticateAdmin, async (req, res) => {
+    adminRouter.get('/apps/:id/logs', authenticateAdmin, async (req, res) => {
         const logs = await db.all(
             'SELECT * FROM proxy_logs WHERE app_id = ? ORDER BY timestamp DESC LIMIT 100',
             [req.params.id]
@@ -458,17 +480,50 @@ module.exports = (app, db, authenticateAdmin) => {
         res.json(logs);
     });
 
-    router.get('/logs', authenticateAdmin, async (req, res) => {
+    adminRouter.get('/logs', authenticateAdmin, async (req, res) => {
         const logs = await db.all(`
             SELECT pl.*, ea.name as app_name 
             FROM proxy_logs pl
-            JOIN external_apps ea ON pl.app_id = ea.id
+            LEFT JOIN external_apps ea ON pl.app_id = ea.id
             ORDER BY pl.timestamp DESC 
             LIMIT 50
         `);
         res.json(logs);
     });
 
-    app.use('/api/v1', router);
-    app.use('/api/admin/external', router); // Also expose management under admin
+    // --- Security Settings API ---
+    adminRouter.get('/settings', authenticateAdmin, async (req, res) => {
+        const settings = await db.get('SELECT * FROM security_settings WHERE id = 1');
+        res.json(settings || { trust_proxies_enabled: 0 });
+    });
+
+    adminRouter.put('/settings', authenticateAdmin, async (req, res) => {
+        const { trust_proxies_enabled } = req.body;
+        await db.run('UPDATE security_settings SET trust_proxies_enabled = ? WHERE id = 1', [trust_proxies_enabled ? 1 : 0]);
+        res.json({ trust_proxies_enabled: trust_proxies_enabled ? 1 : 0 });
+    });
+
+    adminRouter.get('/trusted-ips', authenticateAdmin, async (req, res) => {
+        const ips = await db.all('SELECT * FROM trusted_ips ORDER BY created_at DESC');
+        res.json(ips);
+    });
+
+    adminRouter.post('/trusted-ips', authenticateAdmin, async (req, res) => {
+        const { ip_address, description } = req.body;
+        try {
+            await db.run('INSERT INTO trusted_ips (ip_address, description) VALUES (?, ?)', [ip_address, description]);
+            const newIp = await db.get('SELECT * FROM trusted_ips WHERE ip_address = ?', [ip_address]);
+            res.status(201).json(newIp);
+        } catch (e) {
+            res.status(400).json({ error: 'IP Address already exists or invalid format' });
+        }
+    });
+
+    adminRouter.delete('/trusted-ips/:id', authenticateAdmin, async (req, res) => {
+        await db.run('DELETE FROM trusted_ips WHERE id = ?', [req.params.id]);
+        res.json({ message: 'IP removed' });
+    });
+
+    app.use('/api/v1', proxyRouter);
+    app.use('/api/admin/external', adminRouter);
 };

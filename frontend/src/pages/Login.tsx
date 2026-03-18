@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import { ShieldCheck, User, Lock, AlertCircle, Loader2 } from 'lucide-react';
+import { API_BASE_URL } from '../config';
 
 const Login: React.FC<{ onLogin: (token: string, user: any) => void }> = ({ onLogin }) => {
     const [username, setUsername] = useState('');
@@ -14,7 +15,7 @@ const Login: React.FC<{ onLogin: (token: string, user: any) => void }> = ({ onLo
         setError('');
         
         try {
-            const res = await axios.post('http://localhost:8001/api/auth/login', { username, password });
+            const res = await axios.post(`${API_BASE_URL}/api/auth/login`, { username, password });
             onLogin(res.data.token, res.data.user);
         } catch (err: any) {
             setError(err.response?.data?.message || 'Identifiants invalides');

@@ -5,6 +5,7 @@ import {
   Trash2, Maximize2, Minimize2,
   Download, Database, Search, ShieldAlert, ShieldCheck
 } from 'lucide-react';
+import { API_BASE_URL } from '../config';
 
 interface ColumnInfo {
   cid: number;
@@ -23,7 +24,7 @@ interface QueryResult {
   executionTime?: number;
 }
 
-const API_BASE = 'http://localhost:8001/api/admin/sql';
+const API_BASE = `${API_BASE_URL}/api/admin/sql`;
 
 const AdminSQL: React.FC = () => {
   const [query, setQuery] = useState('');

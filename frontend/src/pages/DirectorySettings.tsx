@@ -4,8 +4,9 @@ import {
   ShieldCheck, Globe, Fingerprint, Search, Check, AlertTriangle, 
   Loader2, Radio, Save, Server
 } from 'lucide-react';
+import { API_BASE_URL } from '../config';
 
-const API_BASE = 'http://localhost:8001/api';
+const API_BASE = `${API_BASE_URL}/api`;
 
 const DirectorySettings: React.FC = () => {
     const [adConfig, setAdConfig] = useState({ 

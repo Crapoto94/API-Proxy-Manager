@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
+import { API_BASE_URL } from '../config';
 
 interface Template {
   id: number;
@@ -14,7 +15,7 @@ interface Template {
   content: string;
 }
 
-const API_URL = 'http://localhost:8001/api/email-templates';
+const API_URL = `${API_BASE_URL}/api/email-templates`;
 
 const EmailTemplates: React.FC = () => {
   const [templates, setTemplates] = useState<Template[]>([]);

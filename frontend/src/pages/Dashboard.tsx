@@ -11,8 +11,9 @@ import {
   Smartphone,
   Loader2
 } from 'lucide-react';
+import { API_BASE_URL } from '../config';
 
-const API_BASE = 'http://localhost:8001/api';
+const API_BASE = `${API_BASE_URL}/api`;
 
 const Dashboard: React.FC = () => {
     const [stats, setStats] = useState<any>(null);

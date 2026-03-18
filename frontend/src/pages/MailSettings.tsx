@@ -3,8 +3,9 @@ import axios from 'axios';
 import { Save, Send, Shield, Globe, Mail, User, Lock, Server, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
+import { API_BASE_URL } from '../config';
 
-const API_BASE = 'http://localhost:8001/api';
+const API_BASE = `${API_BASE_URL}/api`;
 
 const MailSettings: React.FC = () => {
     const [settings, setSettings] = useState<any>({

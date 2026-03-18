@@ -122,6 +122,18 @@ async function setupDb() {
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(app_id) REFERENCES external_apps(id)
         );
+
+        CREATE TABLE IF NOT EXISTS security_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            trust_proxies_enabled INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS trusted_ips (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip_address TEXT UNIQUE,
+            description TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
     `);
 
     // Insert default mail settings if not exists
@@ -130,6 +142,7 @@ async function setupDb() {
     await db.run('INSERT OR IGNORE INTO ad_settings (id) VALUES (1)');
     await db.run('INSERT OR IGNORE INTO azure_ad_settings (id) VALUES (1)');
     await db.run('INSERT OR IGNORE INTO oracle_settings (id) VALUES (1)');
+    await db.run('INSERT OR IGNORE INTO security_settings (id) VALUES (1)');
 
     // Seed default admin user if no users exist
     const userCount = await db.get('SELECT COUNT(*) as c FROM users');

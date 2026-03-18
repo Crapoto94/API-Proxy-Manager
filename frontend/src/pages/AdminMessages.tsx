@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Save, Trash2, Plus, X, Edit2, Loader2, Search } from 'lucide-react';
+import { API_BASE_URL } from '../config';
 
 interface Message {
     id: number;
@@ -9,7 +10,7 @@ interface Message {
     content: string;
 }
 
-const API_URL = 'http://localhost:8001/api/messages';
+const API_URL = `${API_BASE_URL}/api/messages`;
 
 const AdminMessages: React.FC = () => {
     const [messages, setMessages] = useState<Message[]>([]);

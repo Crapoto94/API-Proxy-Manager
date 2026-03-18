@@ -14,8 +14,9 @@ import {
   Loader2,
   Key
 } from 'lucide-react';
+import { API_BASE_URL } from '../config';
 
-const API_BASE = 'http://localhost:8001/api';
+const API_BASE = `${API_BASE_URL}/api`;
 
 interface User {
   id: number;

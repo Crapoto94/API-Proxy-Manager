@@ -4,8 +4,9 @@ import {
   Database, Globe, Save, Zap, 
   CheckCircle2, AlertTriangle, Loader2, Users, Euro, RefreshCw, Box, LayoutGrid, X, Search as SearchIcon, Table, List
 } from 'lucide-react';
+import { API_BASE_URL } from '../config';
 
-const API_BASE = 'http://localhost:8001/api';
+const API_BASE = `${API_BASE_URL}/api`;
 
 const OracleSettings: React.FC = () => {
     const [configs, setConfigs] = useState<any[]>([
