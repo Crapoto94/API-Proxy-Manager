@@ -271,6 +271,7 @@ async function startServer() {
     require('./routes/glpi')(app, db, authenticateAdmin);
     require('./routes/users')(app, db, authenticateAdmin);
     require('./routes/proxy')(app, db, authenticateAdmin);
+    require('./routes/o365')(app, db, authenticateAdmin);
     
     app.listen(PORT, () => {
         console.log(`[APM] Backend started on http://localhost:${PORT}`);

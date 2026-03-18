@@ -14,7 +14,8 @@ import {
   Smartphone,
   Mail,
   Loader2,
-  Power
+  Power,
+  Database
 } from 'lucide-react';
 import { API_BASE_URL } from '../config';
 
@@ -25,15 +26,36 @@ interface ExternalApp {
   name: string;
   api_key: string;
   is_active: number;
+  authorized_routes: string; // JSON string
   created_at: string;
 }
+
+const AVAILABLE_PERMISSIONS = [
+    { id: 'sms_send', name: 'Envoi SMS (Frizbi)', icon: Smartphone },
+    { id: 'mail_send', name: 'Envoi Mail (SMTP)', icon: Mail },
+    { id: 'ad_search', name: 'Recherche AD', icon: ShieldCheck },
+    { id: 'ad_auth', name: 'Authentification AD', icon: ShieldCheck },
+    { id: 'azure_search', name: 'Recherche Azure AD', icon: Globe },
+    { id: 'oracle_query', name: 'Requêtes Oracle', icon: Database },
+    { id: 'oracle_sync', name: 'Synchro Oracle', icon: RefreshCw },
+    { id: 'o365_read', name: 'Lecture O365', icon: Mail },
+    { id: 'o365_harvest', name: 'Moissonnage O365', icon: RefreshCw },
+    { id: 'glpi_read', name: 'Stats GLPI', icon: Activity },
+];
+
+import { RefreshCw, Edit3 } from 'lucide-react';
 
 const AppManagement: React.FC = () => {
     const [apps, setApps] = useState<ExternalApp[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [isModalOpen, setIsModalOpen] = useState(false);
+    const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+    const [editingApp, setEditingApp] = useState<ExternalApp | null>(null);
+    
     const [newName, setNewName] = useState('');
+    const [selectedPermissions, setSelectedPermissions] = useState<string[]>(['*']);
+    
     const [copyStatus, setCopyStatus] = useState<number | null>(null);
     const [selectedAppLogs, setSelectedAppLogs] = useState<any[] | null>(null);
     const [viewingLogApp, setViewingLogApp] = useState<ExternalApp | null>(null);
@@ -66,13 +88,62 @@ const AppManagement: React.FC = () => {
     const handleCreateApp = async (e: React.FormEvent) => {
         e.preventDefault();
         try {
-            await axios.post(`${API_BASE}/apps`, { name: newName });
+            await axios.post(`${API_BASE}/apps`, { 
+                name: newName,
+                authorized_routes: selectedPermissions
+            });
             setNewName('');
+            setSelectedPermissions(['*']);
             setIsModalOpen(false);
             fetchApps();
         } catch (err) {
             alert('Erreur lors de la création');
         }
+    };
+
+    const handleUpdateApp = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!editingApp) return;
+        try {
+            await axios.put(`${API_BASE}/apps/${editingApp.id}`, { 
+                name: newName,
+                authorized_routes: selectedPermissions
+            });
+            setEditingApp(null);
+            setIsEditModalOpen(false);
+            fetchApps();
+        } catch (err) {
+            alert('Erreur lors de la mise à jour');
+        }
+    };
+
+    const openEditModal = (app: ExternalApp) => {
+        setEditingApp(app);
+        setNewName(app.name);
+        try {
+            const perms = JSON.parse(app.authorized_routes || '["*"]');
+            setSelectedPermissions(perms);
+        } catch (e) {
+            setSelectedPermissions(['*']);
+        }
+        setIsEditModalOpen(true);
+    };
+
+    const togglePermission = (permId: string) => {
+        if (permId === '*') {
+            setSelectedPermissions(['*']);
+            return;
+        }
+
+        setSelectedPermissions(prev => {
+            const filtered = prev.filter(p => p !== '*');
+            if (filtered.includes(permId)) {
+                const next = filtered.filter(p => p !== permId);
+                return next.length === 0 ? ['*'] : next;
+            } else {
+                return [...filtered, permId];
+            }
+        });
     };
 
     const handleDeleteApp = async (id: number) => {
@@ -102,16 +173,54 @@ const AppManagement: React.FC = () => {
 
     const filteredApps = apps.filter(a => a.name.toLowerCase().includes(searchTerm.toLowerCase()));
 
+    const PermissionCheckboxes = () => (
+        <div className="space-y-4">
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Permissions autorisées</label>
+            <div className="grid grid-cols-2 gap-3">
+                <button
+                    type="button"
+                    onClick={() => togglePermission('*')}
+                    className={`flex items-center gap-3 p-3 rounded-xl border-2 transition-all text-left ${
+                        selectedPermissions.includes('*') 
+                            ? 'bg-blue-600 border-blue-600 text-white' 
+                            : 'bg-white border-slate-100 text-slate-600 hover:border-blue-200'
+                    }`}
+                >
+                    <Globe size={18} />
+                    <span className="text-xs font-bold">Toutes les API (*)</span>
+                </button>
+                {AVAILABLE_PERMISSIONS.map(perm => (
+                    <button
+                        key={perm.id}
+                        type="button"
+                        onClick={() => togglePermission(perm.id)}
+                        className={`flex items-center gap-3 p-3 rounded-xl border-2 transition-all text-left ${
+                            selectedPermissions.includes(perm.id)
+                                ? 'bg-blue-600 border-blue-600 text-white'
+                                : 'bg-white border-slate-100 text-slate-600 hover:border-blue-200'
+                        } ${selectedPermissions.includes('*') ? 'ring-2 ring-blue-100' : ''}`}
+                    >
+                        <perm.icon size={18} />
+                        <span className="text-xs font-bold">{perm.name}</span>
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
-            {/* Header and stats grid same as before */}
             <div className="flex items-center justify-between">
                 <div>
                     <h2 className="text-3xl font-black text-slate-900">Applications Externes</h2>
                     <p className="text-slate-500 mt-2 font-medium">Gérez les jetons d'accès pour vos applications tierces</p>
                 </div>
                 <button 
-                    onClick={() => setIsModalOpen(true)}
+                    onClick={() => {
+                        setNewName('');
+                        setSelectedPermissions(['*']);
+                        setIsModalOpen(true);
+                    }}
                     className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-6 py-3 rounded-2xl font-black shadow-lg shadow-slate-900/20 transition-all active:scale-95"
                 >
                     <Plus size={20} />
@@ -125,17 +234,17 @@ const AppManagement: React.FC = () => {
                         <Smartphone size={24} />
                     </div>
                     <div>
-                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Endpoint SMS</p>
-                        <p className="text-sm font-bold text-slate-800 mt-0.5">POST /api/v1/sms/send</p>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Endpoints Proxy</p>
+                        <p className="text-sm font-bold text-slate-800 mt-0.5">/api/v1/...</p>
                     </div>
                 </div>
                 <div className="bg-white p-6 rounded-[2rem] border border-slate-200 shadow-sm flex items-center gap-4">
                     <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                        <Mail size={24} />
+                        <Globe size={24} />
                     </div>
                     <div>
-                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Endpoint Mail</p>
-                        <p className="text-sm font-bold text-slate-800 mt-0.5">POST /api/v1/mail/send</p>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Granularité</p>
+                        <p className="text-sm font-bold text-slate-800 mt-0.5">Contrôle par endpoint</p>
                     </div>
                 </div>
                 <div className="bg-white p-6 rounded-[2rem] border border-slate-200 shadow-sm flex items-center gap-4">
@@ -186,8 +295,12 @@ const AppManagement: React.FC = () => {
                                         <div>
                                             <div className="flex items-center gap-3">
                                                 <h4 className={`text-lg font-black ${app.is_active === 1 ? 'text-slate-900' : 'text-slate-400'}`}>{app.name}</h4>
-                                                {app.is_active === 0 && (
+                                                {app.is_active === 0 ? (
                                                     <span className="px-2 py-0.5 rounded-md bg-slate-200 text-slate-500 text-[10px] font-bold uppercase">Inactif</span>
+                                                ) : (
+                                                    <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-600 text-[10px] font-bold uppercase">
+                                                        {JSON.parse(app.authorized_routes || '["*"]').includes('*') ? 'Accès Total' : `${JSON.parse(app.authorized_routes).length} API(s)`}
+                                                    </span>
                                                 )}
                                             </div>
                                             <div className="flex items-center gap-3 mt-1.5">
@@ -203,6 +316,13 @@ const AppManagement: React.FC = () => {
                                     </div>
 
                                 <div className="flex items-center gap-2">
+                                    <button 
+                                        onClick={() => openEditModal(app)}
+                                        className="flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs bg-white border border-slate-200 text-slate-600 hover:border-blue-500 hover:text-blue-600 transition-all"
+                                    >
+                                        <Edit3 size={14} />
+                                        <span>ÉDITER</span>
+                                    </button>
                                     <button 
                                         onClick={() => handleToggleApp(app.id)}
                                         className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs transition-all ${
@@ -228,7 +348,7 @@ const AppManagement: React.FC = () => {
                                         }`}
                                     >
                                         {copyStatus === app.id ? <CheckCircle2 size={14} /> : <Copy size={14} />}
-                                        <span>{copyStatus === app.id ? 'COPIÉ' : 'COPIER LA CLÉ'}</span>
+                                        <span>{copyStatus === app.id ? 'COPIÉ' : 'COPIER'}</span>
                                     </button>
                                     <button 
                                         onClick={() => handleDeleteApp(app.id)}
@@ -244,30 +364,35 @@ const AppManagement: React.FC = () => {
             </div>
 
             {/* Modals */}
-            {isModalOpen && (
+            {(isModalOpen || isEditModalOpen) && (
                 <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 animate-in fade-in duration-300">
-                    <div className="absolute inset-0 bg-[#0f172a]/80 backdrop-blur-sm" onClick={() => setIsModalOpen(false)}></div>
-                    <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl relative overflow-hidden animate-in zoom-in-95 duration-300">
+                    <div className="absolute inset-0 bg-[#0f172a]/80 backdrop-blur-sm" onClick={() => { setIsModalOpen(false); setIsEditModalOpen(false); }}></div>
+                    <div className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl relative overflow-hidden animate-in zoom-in-95 duration-300">
                         <div className="px-10 py-8 border-b border-slate-50">
-                            <h3 className="text-xl font-black text-slate-900">Nouvelle Application</h3>
-                            <p className="text-sm font-medium text-slate-500 mt-1">Générez une clé API sécurisée</p>
+                            <h3 className="text-xl font-black text-slate-900">{isEditModalOpen ? 'Modifier' : 'Nouvelle'} Application</h3>
+                            <p className="text-sm font-medium text-slate-500 mt-1">{isEditModalOpen ? 'Mettez à jour les permissions' : 'Générez une clé API sécurisée'}</p>
                         </div>
-                        <form onSubmit={handleCreateApp} className="p-10 space-y-6">
+                        <form onSubmit={isEditModalOpen ? handleUpdateApp : handleCreateApp} className="p-10 space-y-8">
                             <div className="space-y-2">
                                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Nom de l'application</label>
                                 <input 
                                     type="text" 
                                     autoFocus
-                                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-4 px-6 outline-none focus:border-blue-500 focus:ring-4 ring-blue-500/5 transition-all font-bold text-lg"
+                                    className="w-full bg-slate-100 border border-slate-200 rounded-2xl py-4 px-6 outline-none focus:border-blue-500 focus:bg-white transition-all font-bold text-lg"
                                     placeholder="Ex: Portail Client"
                                     value={newName}
                                     onChange={e => setNewName(e.target.value)}
                                     required
                                 />
                             </div>
+
+                            <PermissionCheckboxes />
+
                             <div className="flex gap-3 pt-4">
-                                <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 py-4 font-black text-slate-400 hover:bg-slate-50 rounded-2xl transition-all">ANNULER</button>
-                                <button type="submit" className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-4 rounded-2xl font-black shadow-lg shadow-blue-500/20 transition-all active:scale-95">GÉNÉRER LA CLÉ</button>
+                                <button type="button" onClick={() => { setIsModalOpen(false); setIsEditModalOpen(false); }} className="flex-1 py-4 font-black text-slate-400 hover:bg-slate-50 rounded-2xl transition-all">ANNULER</button>
+                                <button type="submit" className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-4 rounded-2xl font-black shadow-lg shadow-blue-500/20 transition-all active:scale-95">
+                                    {isEditModalOpen ? 'ENREGISTRER' : 'GÉNÉRER LA CLÉ'}
+                                </button>
                             </div>
                         </form>
                     </div>
@@ -290,7 +415,7 @@ const AppManagement: React.FC = () => {
                             ) : selectedAppLogs.length === 0 ? (
                                 <div className="py-20 text-center font-bold text-slate-400 grayscale italic text-sm">AUCUN LOG DISPONIBLE</div>
                             ) : (
-                                <div className="space-y-4">
+                                <div className="p-6 overflow-y-auto space-y-4">
                                     {selectedAppLogs.map((log: any) => (
                                         <div key={log.id} className="bg-slate-50 rounded-2xl border border-slate-100 overflow-hidden">
                                             <div className="p-4 flex items-center justify-between hover:bg-slate-100 cursor-pointer transition-colors" onClick={() => {

@@ -13,6 +13,7 @@ import {
   LogOut,
   Bell,
   Menu,
+  Mail,
   X
 } from 'lucide-react';
 
@@ -53,6 +54,7 @@ const Layout = ({ children, onLogout, user }: { children: React.ReactNode, onLog
           <SidebarLink to="/mail-settings" icon={Settings}>Mails SMTP</SidebarLink>
           <SidebarLink to="/frizbi-settings" icon={MessageSquare}>SMS Frizbi</SidebarLink>
           <SidebarLink to="/directory" icon={ShieldCheck}>Annuaire AD</SidebarLink>
+          <SidebarLink to="/o365" icon={Mail}>Messagerie O365</SidebarLink>
           <SidebarLink to="/database" icon={Database}>Oracle & Sync</SidebarLink>
           <SidebarLink to="/sql" icon={Search}>SQL Explorer</SidebarLink>
           <SidebarLink to="/users" icon={Users}>Utilisateurs</SidebarLink>
@@ -124,6 +126,7 @@ import ApiDocs from './pages/ApiDocs';
 import UserSettings from './pages/UserSettings';
 import AppManagement from './pages/AppManagement';
 import SecuritySettings from './pages/SecuritySettings';
+import O365Settings from './pages/O365Settings';
 import Login from './pages/Login';
 
 const App = () => {
@@ -170,6 +173,7 @@ const App = () => {
           <Route path="/users" element={<UserSettings />} />
           <Route path="/apps" element={<AppManagement />} />
           <Route path="/security" element={<SecuritySettings />} />
+          <Route path="/o365" element={<O365Settings />} />
           <Route path="/api-docs" element={<ApiDocs />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

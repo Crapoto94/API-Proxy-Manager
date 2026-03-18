@@ -108,6 +108,7 @@ async function setupDb() {
             name TEXT UNIQUE,
             api_key TEXT UNIQUE,
             is_active INTEGER DEFAULT 1,
+            authorized_routes TEXT DEFAULT '["*"]',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -134,7 +135,44 @@ async function setupDb() {
             description TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS o365_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            tenant_id TEXT,
+            client_id TEXT,
+            client_secret TEXT,
+            mailbox TEXT,
+            is_enabled INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS o365_messages (
+            id TEXT PRIMARY KEY,
+            subject TEXT,
+            from_name TEXT,
+            from_email TEXT,
+            received_at DATETIME,
+            body_preview TEXT,
+            is_processed INTEGER DEFAULT 0,
+            harvested_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS glpi_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            url TEXT,
+            app_token TEXT,
+            user_token TEXT,
+            login TEXT,
+            password TEXT,
+            is_enabled INTEGER DEFAULT 0
+        );
     `);
+
+    // Migration to add authorized_routes if it doesn't exist (for existing databases)
+    try {
+        await db.run('ALTER TABLE external_apps ADD COLUMN authorized_routes TEXT DEFAULT \'["*"]\'');
+    } catch (e) {
+        // Column probably already exists
+    }
 
     // Insert default mail settings if not exists
     await db.run('INSERT OR IGNORE INTO mail_settings (id) VALUES (1)');
@@ -143,6 +181,8 @@ async function setupDb() {
     await db.run('INSERT OR IGNORE INTO azure_ad_settings (id) VALUES (1)');
     await db.run('INSERT OR IGNORE INTO oracle_settings (id) VALUES (1)');
     await db.run('INSERT OR IGNORE INTO security_settings (id) VALUES (1)');
+    await db.run('INSERT OR IGNORE INTO o365_settings (id) VALUES (1)');
+    await db.run('INSERT OR IGNORE INTO glpi_settings (id) VALUES (1)');
 
     // Seed default admin user if no users exist
     const userCount = await db.get('SELECT COUNT(*) as c FROM users');

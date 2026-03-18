@@ -65,9 +65,34 @@ module.exports = (app, db, authenticateAdmin) => {
             if (!appEntry) {
                 return res.status(401).json({ error: 'Invalid or inactive API Key' });
             }
+
+            // --- Granular Route Authorization ---
+            const path = req.path;
+            let requiredPermission = null;
+
+            if (path.startsWith('/sms/')) requiredPermission = 'sms_send';
+            else if (path.startsWith('/mail/')) requiredPermission = 'mail_send';
+            else if (path.startsWith('/ad/search')) requiredPermission = 'ad_search';
+            else if (path.startsWith('/ad/authenticate')) requiredPermission = 'ad_auth';
+            else if (path.startsWith('/azure/search')) requiredPermission = 'azure_search';
+            else if (path.startsWith('/oracle/query')) requiredPermission = 'oracle_query';
+            else if (path.startsWith('/oracle/sync')) requiredPermission = 'oracle_sync';
+            else if (path.startsWith('/o365/messages')) requiredPermission = 'o365_read';
+            else if (path.startsWith('/o365/synced-messages')) requiredPermission = 'o365_read';
+            else if (path.startsWith('/o365/harvest')) requiredPermission = 'o365_harvest';
+            else if (path.startsWith('/glpi/')) requiredPermission = 'glpi_read';
+
+            const authorizedRoutes = JSON.parse(appEntry.authorized_routes || '["*"]');
+            
+            if (!authorizedRoutes.includes('*') && requiredPermission && !authorizedRoutes.includes(requiredPermission)) {
+                console.warn(`[SECURITY] App "${appEntry.name}" blocked from accessing ${path} (Permission missing: ${requiredPermission})`);
+                return res.status(403).json({ error: 'Insufficient permissions for this API route' });
+            }
+
             req.externalApp = appEntry;
             next();
         } catch (error) {
+            console.error('[AUTH ERROR]:', error.message);
             res.status(500).json({ error: 'Internal auth error' });
         }
     };
@@ -113,6 +138,10 @@ module.exports = (app, db, authenticateAdmin) => {
      *     responses:
      *       200:
      *         description: SMS envoyé
+     *       401:
+     *         description: Clé API manquante ou invalide
+     *       403:
+     *         description: IP non autorisée ou permissions insuffisantes
      */
     proxyRouter.post('/sms/send', verifyApiKey, async (req, res) => {
         const { mobile, message } = req.body;
@@ -148,41 +177,7 @@ module.exports = (app, db, authenticateAdmin) => {
         }
     });
 
-    /**
-     * @openapi
-     * /api/v1/mail/send:
-     *   post:
-     *     tags: [Proxy APIs (External)]
-     *     summary: Envoie un email via le proxy Mail (SMTP/Brevo)
-     *     security:
-     *       - ApiKeyAuth: []
-     *     requestBody:
-     *       required: true
-     *       content:
-     *         application/json:
-     *           schema:
-     *             type: object
-     *             required: [to, subject, content]
-     *             properties:
-     *               to:
-     *                 type: string
-     *               subject:
-     *                 type: string
-     *               content:
-     *                 type: string
-     *               from_name:
-     *                 type: string
-     *                 description: Nom de l'expéditeur (optionnel, écrase les réglages console)
-     *               from_email:
-     *                 type: string
-     *                 description: Email de l'expéditeur (optionnel, écrase les réglages console)
-     *               is_raw:
-     *                 type: boolean
-     *                 description: Si vrai, n'applique pas le template HTML DSI (optionnel)
-     *     responses:
-     *       200:
-     *         description: Email envoyé
-     */
+
     proxyRouter.post('/mail/send', verifyApiKey, async (req, res) => {
         const { to, subject, content, from_name, from_email, is_raw } = req.body;
         if (!to || !subject || !content) {
@@ -203,6 +198,168 @@ module.exports = (app, db, authenticateAdmin) => {
             }
         } catch (error) {
             res.status(500).json({ error: error.message });
+        }
+    });
+
+    // --- Office 365: Boîte Mail ---
+    /**
+     * @openapi
+     * /api/v1/o365/messages:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Liste les messages d'une boîte Office 365
+     *     security:
+     *       - ApiKeyAuth: []
+     *     responses:
+     *       200:
+     *         description: Liste des messages récupérée
+     *       401:
+     *         description: Clé API manquante ou invalide
+     *       403:
+     *         description: IP non autorisée ou permissions insuffisantes
+     */
+    proxyRouter.get('/o365/messages', verifyApiKey, async (req, res) => {
+        try {
+            const result = await axios.get(`http://localhost:8001/api/o365/messages`, {
+                headers: { 'Authorization': req.headers.authorization } // On rebondit sur l'API interne via redirection (ou appel direct)
+            });
+            res.json(result.data);
+        } catch (error) {
+            // Si l'appel interne échoue car on n'a pas de JWT admin, on doit refaire la logique ici ou exposer la fonction
+            // Pour faire simple et propre, on va appeler la fonction de o365.js si possible ou réeffectuer l'appel Graph
+            // Appel direct à l'API interne avec un token admin "système" ou simplement coder la logique ici.
+            // Option choisie : L'API proxy réeffecute la logique via Microsoft Graph pour être autonome.
+            const o365 = await db.get('SELECT * FROM o365_settings WHERE id = 1 AND is_enabled = 1');
+            if (!o365) return res.status(503).json({ error: 'O365 service disabled' });
+
+            const tokenRes = await axios.post(`https://login.microsoftonline.com/${o365.tenant_id}/oauth2/v2.0/token`, new URLSearchParams({
+                client_id: o365.client_id,
+                grant_type: 'client_credentials',
+                scope: 'https://graph.microsoft.com/.default',
+                client_secret: o365.client_secret
+            }));
+
+            const messagesRes = await axios.get(`https://graph.microsoft.com/v1.0/users/${o365.mailbox}/messages`, {
+                headers: { Authorization: `Bearer ${tokenRes.data.access_token}` },
+                params: { '$top': 50, '$select': 'id,subject,from,receivedDateTime,isRead' }
+            });
+
+            res.json(messagesRes.data.value);
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/o365/messages/{id}:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Lit un message Office 365 spécifique
+     *     security:
+     *       - ApiKeyAuth: []
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema:
+     *           type: string
+     *     responses:
+     *       200:
+     *         description: Contenu du message
+     */
+    proxyRouter.get('/o365/messages/:id', verifyApiKey, async (req, res) => {
+        try {
+            const o365 = await db.get('SELECT * FROM o365_settings WHERE id = 1 AND is_enabled = 1');
+            if (!o365) return res.status(503).json({ error: 'O365 service disabled' });
+
+            const tokenRes = await axios.post(`https://login.microsoftonline.com/${o365.tenant_id}/oauth2/v2.0/token`, new URLSearchParams({
+                client_id: o365.client_id,
+                grant_type: 'client_credentials',
+                scope: 'https://graph.microsoft.com/.default',
+                client_secret: o365.client_secret
+            }));
+
+            const messageRes = await axios.get(`https://graph.microsoft.com/v1.0/users/${o365.mailbox}/messages/${req.params.id}`, {
+                headers: { Authorization: `Bearer ${tokenRes.data.access_token}` }
+            });
+
+            res.json(messageRes.data);
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/o365/synced-messages:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Liste les messages moissonnés stockés en local
+     *     security: [{ ApiKeyAuth: [] }]
+     */
+    proxyRouter.get('/o365/synced-messages', verifyApiKey, async (req, res) => {
+        try {
+            const messages = await db.all('SELECT * FROM o365_messages ORDER BY received_at DESC');
+            res.json(messages);
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/o365/harvest:
+     *   post:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Déclenche un moissonnage des messages O365
+     *     security: [{ ApiKeyAuth: [] }]
+     */
+    proxyRouter.post('/o365/harvest', verifyApiKey, async (req, res) => {
+        try {
+            const result = await axios.post(`http://localhost:8001/api/o365/harvest`, {}, {
+                headers: { 'Authorization': req.headers.authorization }
+            });
+            res.json(result.data);
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to trigger harvest' });
+        }
+    });
+
+    // --- Monitoring: GLPI ---
+    /**
+     * @openapi
+     * /api/v1/glpi/tickets-count:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Récupère le nombre de tickets ouverts dans GLPI
+     *     security: [{ ApiKeyAuth: [] }]
+     */
+    proxyRouter.get('/glpi/tickets-count', verifyApiKey, async (req, res) => {
+        try {
+            const result = await axios.get(`http://localhost:8001/api/glpi/tickets-count`, {
+                headers: { 'Authorization': req.headers.authorization }
+            });
+            res.json(result.data);
+        } catch (error) {
+            res.status(500).json({ error: 'GLPI measurement failed' });
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/glpi/recent-tickets:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Liste les tickets récents de GLPI
+     *     security: [{ ApiKeyAuth: [] }]
+     */
+    proxyRouter.get('/glpi/recent-tickets', verifyApiKey, async (req, res) => {
+        try {
+            const result = await axios.get(`http://localhost:8001/api/glpi/recent-tickets`, {
+                headers: { 'Authorization': req.headers.authorization }
+            });
+            res.json(result.data);
+        } catch (error) {
+            res.status(500).json({ error: 'GLPI listing failed' });
         }
     });
 
@@ -444,13 +601,25 @@ module.exports = (app, db, authenticateAdmin) => {
     });
 
     adminRouter.post('/apps', authenticateAdmin, async (req, res) => {
-        const { name } = req.body;
+        const { name, authorized_routes } = req.body;
         const apiKey = crypto.randomBytes(32).toString('hex');
+        const routesJson = JSON.stringify(authorized_routes || ["*"]);
         try {
-            await db.run('INSERT INTO external_apps (name, api_key) VALUES (?, ?)', [name, apiKey]);
+            await db.run('INSERT INTO external_apps (name, api_key, authorized_routes) VALUES (?, ?, ?)', [name, apiKey, routesJson]);
             res.status(201).json({ name, api_key: apiKey });
         } catch (e) {
             res.status(400).json({ error: e.message });
+        }
+    });
+
+    adminRouter.put('/apps/:id', authenticateAdmin, async (req, res) => {
+        const { name, authorized_routes } = req.body;
+        const routesJson = JSON.stringify(authorized_routes || ["*"]);
+        try {
+            await db.run('UPDATE external_apps SET name = ?, authorized_routes = ? WHERE id = ?', [name, routesJson, req.params.id]);
+            res.json({ success: true });
+        } catch (e) {
+            res.status(500).json({ error: e.message });
         }
     });
 
