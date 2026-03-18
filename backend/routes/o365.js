@@ -110,7 +110,7 @@ module.exports = (app, db, authenticateAdmin) => {
             const response = await axios.get(`https://graph.microsoft.com/v1.0/users/${settings.mailbox}/messages`, {
                 headers: { Authorization: `Bearer ${token}` },
                 params: {
-                    '$select': 'id,subject,receivedDateTime,from,isRead',
+                    '$select': 'id,subject,receivedDateTime,from,isRead,bodyPreview',
                     '$orderby': 'receivedDateTime desc',
                     '$top': 50
                 }
