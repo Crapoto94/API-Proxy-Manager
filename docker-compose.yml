@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - portainer_data:/data
+    ports:
+      - "9000:9000"
+      - "9443:9443"
+
+  backend:
+    build: 
+      context: ./backend
+    container_name: apm-backend
+    restart: always
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./backend/database.sqlite:/app/database.sqlite
+    environment:
+      - NODE_ENV=production
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - VITE_API_URL=${APM_API_URL:-http://localhost:8001}
+    container_name: apm-frontend
+    restart: always
+    ports:
+      - "8000:80"
+    depends_on:
+      - backend
+
+volumes:
+  portainer_data:
