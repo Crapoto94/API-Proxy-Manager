@@ -22,7 +22,6 @@ const DirectorySettings: React.FC = () => {
 
     const [testUser, setTestUser] = useState('');
     const [azureTestUser, setAzureTestUser] = useState('');
-    const [isSaving, setIsSaving] = useState(false);
     const [testResult, setTestResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
     const [azureTestResult, setAzureTestResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
     const [loading, setLoading] = useState(true);
@@ -55,8 +54,6 @@ const DirectorySettings: React.FC = () => {
             setTestResult({ success: true, message: 'Configuration AD enregistrée.' });
         } catch (err) {
             setTestResult({ success: false, message: 'Erreur lors de l’enregistrement AD.' });
-        } finally {
-            setIsSaving(false);
         }
     };
 
@@ -67,8 +64,6 @@ const DirectorySettings: React.FC = () => {
             setAzureTestResult({ success: true, message: 'Configuration Azure enregistrée.' });
         } catch (err) {
             setAzureTestResult({ success: false, message: 'Erreur lors de l’enregistrement Azure.' });
-        } finally {
-            setIsSaving(false);
         }
     };
 
