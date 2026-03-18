@@ -1,13 +1,22 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import { ShieldCheck, User, Lock, AlertCircle, Loader2 } from 'lucide-react';
-import { API_BASE_URL } from '../config';
+import { API_BASE_URL, setApiBaseUrl } from '../config';
+import { Settings } from 'lucide-react';
 
 const Login: React.FC<{ onLogin: (token: string, user: any) => void }> = ({ onLogin }) => {
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [showSettings, setShowSettings] = useState(false);
+    const [tempApiUrl, setTempApiUrl] = useState(API_BASE_URL);
+
+    const handleSaveSettings = () => {
+        setApiBaseUrl(tempApiUrl);
+        setShowSettings(false);
+        window.location.reload();
+    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -93,11 +102,45 @@ const Login: React.FC<{ onLogin: (token: string, user: any) => void }> = ({ onLo
                         </button>
                     </form>
 
-                    <div className="mt-10 text-center">
-                        <p className="text-slate-500 text-xs font-medium">
-                            Accès restreint à l'administration technique.<br/>
-                            Contactez la DSI pour toute demande d'accès.
-                        </p>
+                    <div className="mt-10 pt-6 border-t border-white/5 flex flex-col items-center">
+                        <button 
+                            onClick={() => setShowSettings(!showSettings)}
+                            className="flex items-center gap-2 text-[10px] font-black text-slate-500 hover:text-blue-400 transition-colors uppercase tracking-widest"
+                        >
+                            <Settings size={12} />
+                            {showSettings ? 'Masquer les paramètres' : 'Paramètres de connexion'}
+                        </button>
+
+                        {showSettings && (
+                            <div className="w-full mt-6 space-y-4 animate-in slide-in-from-bottom-2 duration-300">
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1 text-left block">URL de l'API Backend</label>
+                                    <input 
+                                        type="text"
+                                        className="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-xs text-blue-300 outline-none focus:border-blue-500/30 transition-all font-mono"
+                                        value={tempApiUrl}
+                                        onChange={e => setTempApiUrl(e.target.value)}
+                                        placeholder="http://192.168.1.50:8001"
+                                    />
+                                </div>
+                                <button 
+                                    onClick={handleSaveSettings}
+                                    className="w-full py-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 text-[10px] font-black rounded-xl border border-blue-500/20 transition-all uppercase tracking-widest"
+                                >
+                                    Appliquer et Recharger
+                                </button>
+                                <p className="text-[9px] text-slate-600 text-center uppercase font-bold tracking-tighter">
+                                    L'URL est mémorisée dans votre navigateur.
+                                </p>
+                            </div>
+                        )}
+
+                        {!showSettings && (
+                            <p className="text-slate-500 text-[10px] font-medium mt-4 text-center">
+                                Accès restreint à l'administration technique.<br/>
+                                Contactez la DSI pour toute demande d'accès.
+                            </p>
+                        )}
                     </div>
                 </div>
             </div>

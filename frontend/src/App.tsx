@@ -16,6 +16,7 @@ import {
   Mail,
   X
 } from 'lucide-react';
+import { API_BASE_URL } from './config';
 
 const SidebarLink = ({ to, icon: Icon, children }: { to: string, icon: any, children: React.ReactNode }) => {
   const location = useLocation();
@@ -64,9 +65,29 @@ const Layout = ({ children, onLogout, user }: { children: React.ReactNode, onLog
         </nav>
 
         <div className="p-5 border-t border-white/5 space-y-4">
-          <div className="flex items-center gap-2 text-xs font-bold text-slate-500">
-            <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]"></div>
-            <span>Système Opérationnel</span>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2 text-xs font-bold text-slate-500">
+              <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]"></div>
+              <span>Système Opérationnel</span>
+            </div>
+            <div className="flex flex-col gap-1 pl-4 border-l border-white/5">
+              <span className="text-[9px] font-black text-slate-600 uppercase tracking-tighter">Backend API</span>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-mono text-blue-400 truncate max-w-[120px]">{API_BASE_URL}</span>
+                <button 
+                  onClick={() => {
+                    const newUrl = prompt('Nouvelle URL API:', API_BASE_URL);
+                    if (newUrl && newUrl !== API_BASE_URL) {
+                      localStorage.setItem('apm_api_url', newUrl);
+                      window.location.reload();
+                    }
+                  }}
+                  className="text-[9px] font-bold text-slate-500 hover:text-blue-400 transition-colors"
+                >
+                  Modifier
+                </button>
+              </div>
+            </div>
           </div>
           
           <div className="pt-2">
