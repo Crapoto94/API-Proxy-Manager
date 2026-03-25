@@ -17,6 +17,7 @@ const OracleSettings: React.FC = () => {
     const [isTesting, setIsTesting] = useState<Record<string, boolean>>({});
     const [loading, setLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
+    const [saveStatus, setSaveStatus] = useState<Record<string, { success: boolean, message: string } | null>>({});
 
     // Explorer State
     const [isExplorerOpen, setIsExplorerOpen] = useState(false);
@@ -55,10 +56,11 @@ const OracleSettings: React.FC = () => {
         setIsSaving(true);
         try {
             await axios.post(`${API_BASE}/oracle-settings`, config);
-            // Non-blocking alert for now
-            console.log(`Paramètres Oracle ${config.type} enregistrés`);
-        } catch (err) {
+            setSaveStatus(prev => ({ ...prev, [config.type]: { success: true, message: 'Configuration enregistrée avec succès' } }));
+            setTimeout(() => setSaveStatus(prev => ({ ...prev, [config.type]: null })), 3000);
+        } catch (err: any) {
             console.error('Erreur lors de la sauvegarde');
+            setSaveStatus(prev => ({ ...prev, [config.type]: { success: false, message: 'Erreur lors de la sauvegarde' } }));
         } finally {
             setIsSaving(false);
         }
@@ -199,14 +201,23 @@ const OracleSettings: React.FC = () => {
                                 </div>
                             </div>
 
-                            <div className="pt-4 flex gap-3">
-                                <button className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-900 text-white rounded-xl font-bold hover:bg-black transition-all" onClick={() => handleSave(config)} disabled={isSaving}>
-                                    <Save size={16} /> Enregistrer
-                                </button>
-                                <button className="px-4 py-2.5 border-2 border-slate-200 text-slate-600 rounded-xl font-bold hover:bg-slate-50 transition-all flex items-center gap-2" onClick={() => handleTest(config.type)} disabled={isTesting[config.type]}>
-                                    {isTesting[config.type] ? <Loader2 className="animate-spin" size={16} /> : <Zap size={16} />} 
-                                    Test
-                                </button>
+                            <div className="pt-4 flex flex-col gap-3">
+                                <div className="flex gap-3">
+                                    <button className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-900 text-white rounded-xl font-bold hover:bg-black transition-all" onClick={() => handleSave(config)} disabled={isSaving}>
+                                        {isSaving ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />} Enregistrer
+                                    </button>
+                                    <button className="px-4 py-2.5 border-2 border-slate-200 text-slate-600 rounded-xl font-bold hover:bg-slate-50 transition-all flex items-center gap-2" onClick={() => handleTest(config.type)} disabled={isTesting[config.type]}>
+                                        {isTesting[config.type] ? <Loader2 className="animate-spin" size={16} /> : <Zap size={16} />} 
+                                        Test
+                                    </button>
+                                </div>
+
+                                {saveStatus[config.type] && (
+                                    <div className={`p-4 rounded-2xl flex items-center gap-3 animate-in slide-in-from-top-2 duration-300 ${saveStatus[config.type]?.success ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                                        {saveStatus[config.type]?.success ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                                        <span className="text-xs font-bold">{saveStatus[config.type]?.message}</span>
+                                    </div>
+                                )}
                             </div>
 
                             {testResults[config.type] && (

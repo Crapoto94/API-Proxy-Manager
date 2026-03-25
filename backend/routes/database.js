@@ -43,6 +43,7 @@ module.exports = function(app, db, authenticateAdmin) {
 
     app.post('/api/oracle-settings', authenticateAdmin, async (req, res) => {
         const { type, host, port, service_name, connectString, username, password, is_enabled } = req.body;
+        console.log(`[ORACLE SETTINGS] Saving for ${type}...`);
         try {
             const sql = (password === '********' || !password)
                 ? 'UPDATE oracle_settings SET host = ?, port = ?, service_name = ?, connectString = ?, username = ?, is_enabled = ? WHERE type = ?'
@@ -50,9 +51,19 @@ module.exports = function(app, db, authenticateAdmin) {
             const params = (password === '********' || !password)
                 ? [host, port, service_name, connectString, username, is_enabled ? 1 : 0, type]
                 : [host, port, service_name, connectString, username, password, is_enabled ? 1 : 0, type];
-            await db.run(sql, params);
+            
+            const result = await db.run(sql, params);
+            if (result.changes === 0) {
+                 // Try insert if update failed (though seeded, let's be safe)
+                 console.log(`[ORACLE SETTINGS] No row for ${type}, performing insert...`);
+                 const insertSql = 'INSERT INTO oracle_settings (type, host, port, service_name, connectString, username, password, is_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
+                 const insertParams = [type, host, port, service_name, connectString, username, password === '********' ? '' : password, is_enabled ? 1 : 0];
+                 await db.run(insertSql, insertParams);
+            }
+            
             res.json({ success: true, message: 'Paramètres Oracle enregistrés' });
         } catch (error) {
+            console.error(`[ORACLE SETTINGS ERROR] ${error.message}`);
             res.status(500).json({ message: error.message });
         }
     });

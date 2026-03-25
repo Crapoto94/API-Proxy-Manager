@@ -81,10 +81,14 @@ async function setupDb() {
         );
 
         CREATE TABLE IF NOT EXISTS oracle_settings (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            user TEXT,
-            password TEXT,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT UNIQUE,
+            host TEXT,
+            port INTEGER,
+            service_name TEXT,
             connectString TEXT,
+            username TEXT,
+            password TEXT,
             is_enabled INTEGER DEFAULT 0
         );
 
@@ -179,7 +183,8 @@ async function setupDb() {
     await db.run('INSERT OR IGNORE INTO frizbi_settings (id) VALUES (1)');
     await db.run('INSERT OR IGNORE INTO ad_settings (id) VALUES (1)');
     await db.run('INSERT OR IGNORE INTO azure_ad_settings (id) VALUES (1)');
-    await db.run('INSERT OR IGNORE INTO oracle_settings (id) VALUES (1)');
+    await db.run('INSERT OR IGNORE INTO oracle_settings (type) VALUES (\'RH\')');
+    await db.run('INSERT OR IGNORE INTO oracle_settings (type) VALUES (\'FINANCES\')');
     await db.run('INSERT OR IGNORE INTO security_settings (id) VALUES (1)');
     await db.run('INSERT OR IGNORE INTO o365_settings (id) VALUES (1)');
     await db.run('INSERT OR IGNORE INTO glpi_settings (id) VALUES (1)');
