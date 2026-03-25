@@ -16,7 +16,7 @@ import {
   Mail,
   X
 } from 'lucide-react';
-import { API_BASE_URL } from './config';
+import { API_BASE_URL, setApiBaseUrl } from './config';
 
 const SidebarLink = ({ to, icon: Icon, children }: { to: string, icon: any, children: React.ReactNode }) => {
   const location = useLocation();
@@ -40,6 +40,8 @@ const SidebarLink = ({ to, icon: Icon, children }: { to: string, icon: any, chil
 
 const Layout = ({ children, onLogout, user }: { children: React.ReactNode, onLogout: () => void, user: any }) => {
   const [isSidebarOpen, setSidebarOpen] = useState(true);
+  const [isEditingApi, setIsEditingApi] = useState(false);
+  const [newApiUrl, setNewApiUrl] = useState(API_BASE_URL);
 
   return (
     <div className="h-screen bg-slate-100 flex overflow-hidden">
@@ -72,20 +74,46 @@ const Layout = ({ children, onLogout, user }: { children: React.ReactNode, onLog
             </div>
             <div className="flex flex-col gap-1 pl-4 border-l border-white/5">
               <span className="text-[9px] font-black text-slate-600 uppercase tracking-tighter">Backend API</span>
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-mono text-blue-400 truncate max-w-[120px]">{API_BASE_URL}</span>
-                <button 
-                  onClick={() => {
-                    const newUrl = prompt('Nouvelle URL API:', API_BASE_URL);
-                    if (newUrl && newUrl !== API_BASE_URL) {
-                      localStorage.setItem('apm_api_url', newUrl);
-                      window.location.reload();
-                    }
-                  }}
-                  className="text-[9px] font-bold text-slate-500 hover:text-blue-400 transition-colors"
-                >
-                  Modifier
-                </button>
+              <div className="flex items-center justify-between group/api">
+                {isEditingApi ? (
+                  <div className="flex items-center gap-1 w-full mt-1">
+                    <input 
+                      type="text"
+                      className="flex-1 bg-white/5 border border-white/20 rounded px-2 py-1 text-[10px] font-mono text-blue-300 outline-none focus:border-blue-500/50"
+                      value={newApiUrl}
+                      onChange={e => setNewApiUrl(e.target.value)}
+                      autoFocus
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          setApiBaseUrl(newApiUrl);
+                          window.location.reload();
+                        } else if (e.key === 'Escape') {
+                          setIsEditingApi(false);
+                          setNewApiUrl(API_BASE_URL);
+                        }
+                      }}
+                    />
+                    <button 
+                      onClick={() => {
+                        setApiBaseUrl(newApiUrl);
+                        window.location.reload();
+                      }}
+                      className="p-1 hover:text-green-400 text-slate-500 transition-colors"
+                    >
+                      <ShieldCheck size={12} />
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <span className="text-[10px] font-mono text-blue-400 truncate max-w-[120px]">{API_BASE_URL}</span>
+                    <button 
+                      onClick={() => setIsEditingApi(true)}
+                      className="text-[9px] font-bold text-slate-500 hover:text-blue-400 transition-colors opacity-0 group-hover/api:opacity-100 transition-opacity"
+                    >
+                      Modifier
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>

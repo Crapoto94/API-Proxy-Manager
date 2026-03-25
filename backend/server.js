@@ -1,4 +1,6 @@
+require('dotenv').config();
 const express = require('express');
+
 const cors = require('cors');
 const path = require('path');
 const setupDb = require('./db');
@@ -25,8 +27,8 @@ const swaggerOptions = {
         },
         servers: [
             {
-                url: 'http://localhost:8001',
-                description: 'Serveur de Développement'
+                url: process.env.BACKEND_URL || 'http://localhost:8001',
+                description: 'Serveur Backend API'
             },
         ],
         components: {
@@ -177,7 +179,22 @@ async function startServer() {
      *     tags: [System]
      *     summary: Documentation Swagger UI
      */
-    app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
+    app.use('/api-docs', swaggerUi.serve, (req, res) => {
+        const dynamicDocs = JSON.parse(JSON.stringify(swaggerDocs));
+        const host = req.get('host');
+        const protocol = req.protocol; 
+        
+        // Priorité : 1. Query Param ?url= | 2. ENV BACKEND_URL | 3. Host actuel
+        const serverUrl = req.query.url || process.env.BACKEND_URL || `${protocol}://${host}`;
+        
+        dynamicDocs.servers = [
+            {
+                url: serverUrl,
+                description: 'Backend API'
+            }
+        ];
+        swaggerUi.setup(dynamicDocs)(req, res);
+    });
 
     /**
      * @openapi
