@@ -73,8 +73,10 @@ module.exports = (app, db, authenticateAdmin) => {
             if (path.startsWith('/sms/')) requiredPermission = 'sms_send';
             else if (path.startsWith('/mail/')) requiredPermission = 'mail_send';
             else if (path.startsWith('/ad/search')) requiredPermission = 'ad_search';
+            else if (path.startsWith('/ad/user')) requiredPermission = 'ad_read';
             else if (path.startsWith('/ad/authenticate')) requiredPermission = 'ad_auth';
             else if (path.startsWith('/azure/search')) requiredPermission = 'azure_search';
+            else if (path.startsWith('/azure/user')) requiredPermission = 'azure_read';
             else if (path.startsWith('/oracle/query')) requiredPermission = 'oracle_query';
             else if (path.startsWith('/oracle/sync')) requiredPermission = 'oracle_sync';
             else if (path.startsWith('/o365/messages')) requiredPermission = 'o365_read';
@@ -413,6 +415,77 @@ module.exports = (app, db, authenticateAdmin) => {
 
     /**
      * @openapi
+     * /api/v1/ad/user:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Récupère tous les détails d'un utilisateur Active Directory
+     *     security:
+     *       - ApiKeyAuth: []
+     *     parameters:
+     *       - in: query
+     *         name: identifier
+     *         required: true
+     *         schema:
+     *           type: string
+     *         description: Identifiant de l'utilisateur (sAMAccountName, mail ou userPrincipalName)
+     *     responses:
+     *       200:
+     *         description: Détails de l'utilisateur récupérés avec succès
+     *       404:
+     *         description: Utilisateur non trouvé
+     *       401:
+     *         description: Clé API manquante ou invalide
+     */
+    proxyRouter.get('/ad/user', verifyApiKey, async (req, res) => {
+        const { identifier } = req.query;
+        if (!identifier) return res.status(400).json({ error: 'Query parameter identifier is required' });
+
+        const ldap = require('ldapjs');
+        const config = await db.get('SELECT * FROM ad_settings WHERE id = 1 AND is_enabled = 1');
+        if (!config) return res.status(503).json({ error: 'AD service disabled' });
+
+        const client = ldap.createClient({ url: `ldap://${config.host}:${config.port}` });
+        client.bind(config.bind_dn, config.bind_password, (err) => {
+            if (err) { client.destroy(); return res.status(500).json({ error: 'LDAP Bind Error: ' + err.message }); }
+            
+            // Recherche avec wildcards * autour de l'identifiant pour recherche partielle
+            const opts = {
+                filter: `(|(sAMAccountName=*${identifier}*)(mail=*${identifier}*)(userPrincipalName=*${identifier}*)(cn=*${identifier}*))`,
+                scope: 'sub',
+                attributes: ['*'] 
+            };
+            
+            client.search(config.base_dn, opts, (err, searchRes) => {
+                if (err) { client.destroy(); return res.status(500).json({ error: 'LDAP Search Error: ' + err.message }); }
+                
+                const entries = [];
+                searchRes.on('searchEntry', (entry) => {
+                    const obj = { dn: entry.objectName };
+                    entry.attributes.forEach(attr => {
+                        obj[attr.type] = attr.values.length === 1 ? attr.values[0] : attr.values;
+                    });
+                    entries.push(obj);
+                });
+                
+                searchRes.on('end', () => {
+                    client.destroy();
+                    if (entries.length > 0) {
+                        res.json(entries);
+                    } else {
+                        res.status(404).json({ error: 'No user found in Active Directory matching ' + identifier });
+                    }
+                });
+                
+                searchRes.on('error', (err) => {
+                    client.destroy();
+                    res.status(500).json({ error: 'LDAP Search Execution Error: ' + err.message });
+                });
+            });
+        });
+    });
+
+    /**
+     * @openapi
      * /api/v1/ad/authenticate:
      *   post:
      *     tags: [Proxy APIs (External)]
@@ -503,6 +576,57 @@ module.exports = (app, db, authenticateAdmin) => {
             res.json(searchRes.data.value);
         } catch (error) {
             res.status(500).json({ error: error.message });
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/azure/user:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Récupère tous les détails d'un utilisateur Entra ID (Azure AD)
+     *     security:
+     *       - ApiKeyAuth: []
+     *     parameters:
+     *       - in: query
+     *         name: identifier
+     *         required: true
+     *         schema:
+     *           type: string
+     *         description: Identifiant de l'utilisateur (UPN, mail ou début du nom)
+     *     responses:
+     *       200:
+     *         description: Détails de l'utilisateur Azure récupérés avec succès
+     *       401:
+     *         description: Clé API manquante ou invalide
+     */
+    proxyRouter.get('/azure/user', verifyApiKey, async (req, res) => {
+        const { identifier } = req.query;
+        if (!identifier) return res.status(400).json({ error: 'Query parameter identifier is required' });
+
+        try {
+            const settings = await db.get('SELECT * FROM azure_ad_settings WHERE id = 1 AND is_enabled = 1');
+            if (!settings) return res.status(503).json({ error: 'Azure service disabled' });
+
+            const tokenRes = await axios.post(`https://login.microsoftonline.com/${settings.tenant_id}/oauth2/v2.0/token`, new URLSearchParams({
+                client_id: settings.client_id,
+                grant_type: 'client_credentials',
+                scope: 'https://graph.microsoft.com/.default',
+                client_secret: settings.client_secret
+            }));
+
+            const searchRes = await axios.get('https://graph.microsoft.com/v1.0/users', {
+                headers: { Authorization: `Bearer ${tokenRes.data.access_token}` },
+                params: {
+                    '$filter': `startsWith(userPrincipalName, '${identifier}') or startsWith(displayName, '${identifier}') or mail eq '${identifier}'`,
+                    '$select': 'id,displayName,userPrincipalName,mail,jobTitle,department,companyName,mobilePhone,businessPhones,usageLocation,assignedLicenses,assignedPlans',
+                    '$top': 10
+                }
+            });
+            res.json(searchRes.data.value);
+        } catch (error) {
+            console.error('[PROXY AZURE] Error:', error.response?.data || error.message);
+            res.status(500).json({ error: error.response?.data?.error?.message || error.message });
         }
     });
 
