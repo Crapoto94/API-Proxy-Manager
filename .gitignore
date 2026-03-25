@@ -6,7 +6,7 @@ node_modules/
 .env.production.local
 dist/
 build/
-*.sqlite
+
 *.log
 .DS_Store
 .vscode/
