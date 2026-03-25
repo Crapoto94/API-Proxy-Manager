@@ -448,9 +448,19 @@ module.exports = (app, db, authenticateAdmin) => {
         client.bind(config.bind_dn, config.bind_password, (err) => {
             if (err) { client.destroy(); return res.status(500).json({ error: 'LDAP Bind Error: ' + err.message }); }
             
-            // Recherche avec wildcards * autour de l'identifiant pour recherche partielle
+            let filter = `(|(sAMAccountName=*${identifier}*)(mail=*${identifier}*)(userPrincipalName=*${identifier}*)(cn=*${identifier}*))`;
+
+            // Support multi-term search (e.g. CHEVALIER+MARC or CHEVALIER&MARC)
+            if (identifier.includes('+') || identifier.includes('&') || identifier.includes(' ')) {
+                const parts = identifier.split(/[+& ]+/).filter(p => p.trim().length > 0);
+                if (parts.length >= 2) {
+                    const subFilters = parts.map(p => `(|(sn=*${p}*)(givenName=*${p}*)(cn=*${p}*))`);
+                    filter = `(|${filter}(&${subFilters.join('')}))`;
+                }
+            }
+
             const opts = {
-                filter: `(|(sAMAccountName=*${identifier}*)(mail=*${identifier}*)(userPrincipalName=*${identifier}*)(cn=*${identifier}*))`,
+                filter: filter,
                 scope: 'sub',
                 attributes: ['*'] 
             };
@@ -615,12 +625,27 @@ module.exports = (app, db, authenticateAdmin) => {
                 client_secret: settings.client_secret
             }));
 
+            let graphFilter = `startsWith(userPrincipalName, '${identifier}') or startsWith(displayName, '${identifier}') or mail eq '${identifier}'`;
+            
+            // Support multi-term search (e.g. CHEVALIER+MARC or CHEVALIER&MARC)
+            if (identifier.includes('+') || identifier.includes('&') || identifier.includes(' ')) {
+                const parts = identifier.split(/[+& ]+/).filter(p => p.trim().length > 0);
+                if (parts.length >= 2) {
+                    const subFilters = parts.map(p => `(startsWith(displayName, '${p}') or contains(displayName, '${p}'))`);
+                    graphFilter = `(${graphFilter}) or (${subFilters.join(' and ')})`;
+                }
+            }
+
             const searchRes = await axios.get('https://graph.microsoft.com/v1.0/users', {
-                headers: { Authorization: `Bearer ${tokenRes.data.access_token}` },
+                headers: { 
+                    Authorization: `Bearer ${tokenRes.data.access_token}`,
+                    'ConsistencyLevel': 'eventual' // Required for advanced filters like 'contains'
+                },
                 params: {
-                    '$filter': `startsWith(userPrincipalName, '${identifier}') or startsWith(displayName, '${identifier}') or mail eq '${identifier}'`,
+                    '$filter': graphFilter,
                     '$select': 'id,displayName,userPrincipalName,mail,jobTitle,department,companyName,mobilePhone,businessPhones,usageLocation,assignedLicenses,assignedPlans',
-                    '$top': 10
+                    '$top': 10,
+                    '$count': 'true' // Also required for advanced filters
                 }
             });
             res.json(searchRes.data.value);
