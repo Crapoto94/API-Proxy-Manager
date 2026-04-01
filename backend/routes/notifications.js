@@ -13,7 +13,7 @@ module.exports = function(app, db, authenticateAdmin) {
 
         if (s.global_enable === 0 || s.global_enable === false) {
             console.log(`[MAIL SYSTEM] Envoi global désactivé. Mail ignoré pour: ${to}`);
-            return { message: 'Envoi désactivé globalement' };
+            throw new Error('L\'envoi global de mails est désactivé dans les paramètres.');
         }
 
         const senderEmail = options.fromEmail || s.sender_email;
@@ -64,7 +64,7 @@ module.exports = function(app, db, authenticateAdmin) {
         }
 
         if (s.use_api === 1 || s.use_api === true) {
-            const apiKey = (s.api_key || s.smtp_pass || '').trim();
+            const apiKey = (s.api_key || '').trim();
             if (!apiKey) throw new Error("Clé API Brevo manquante");
 
             const apiUrl = s.api_url || 'https://api.brevo.com/v3/smtp/email';
@@ -115,6 +115,7 @@ module.exports = function(app, db, authenticateAdmin) {
                     cid: a.cid
                 }))
             });
+            console.log(`[MAIL SYSTEM] SMTP Mail envoyé avec succès à: ${to}`);
         }
     }
 
