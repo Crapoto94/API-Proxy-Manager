@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Save, Send, Shield, Globe, Mail, User, Lock, Server, CheckCircle2, AlertTriangle, Loader2, Zap } from 'lucide-react';
+import { Save, Send, Shield, Globe, Mail, User, Lock, Server, CheckCircle2, AlertTriangle, Loader2, Zap, Code, Eye } from 'lucide-react';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
 import { API_BASE_URL } from '../config';
@@ -77,6 +77,7 @@ const MailSettings: React.FC = () => {
     const [saving, setSaving] = useState(false);
     const [testing, setTesting] = useState(false);
     const [status, setStatus] = useState<{ type: 'success' | 'error', msg: string } | null>(null);
+    const [showHtml, setShowHtml] = useState(false);
 
     useEffect(() => { fetchSettings(); }, []);
 
@@ -283,15 +284,36 @@ const MailSettings: React.FC = () => {
                                     />
                                 </div>
                             </div>
-                            <div className="space-y-2">
-                                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Enveloppe HTML Global ({"{{content}}"})</label>
-                                <div className="rounded-2xl border border-slate-200 overflow-hidden">
-                                    <ReactQuill 
-                                        theme="snow" 
-                                        value={settings.template_html} 
-                                        onChange={val => setSettings({...settings, template_html: val})}
-                                        style={{ height: '200px' }}
-                                    />
+                            <div className="space-y-4">
+                                <div className="flex items-center justify-between">
+                                    <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Enveloppe HTML Global ({"{{content}}"})</label>
+                                    <button 
+                                        type="button"
+                                        onClick={() => setShowHtml(!showHtml)}
+                                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all border ${showHtml ? 'bg-blue-600 border-blue-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                                    >
+                                        {showHtml ? <Eye size={12} /> : <Code size={12} />}
+                                        {showHtml ? 'Voir le rendu' : 'Voir le Code HTML'}
+                                    </button>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 overflow-hidden shadow-inner bg-slate-50">
+                                    {showHtml ? (
+                                        <textarea
+                                            className="w-full h-[300px] p-6 font-mono text-xs bg-slate-900 text-blue-100 outline-none resize-none leading-relaxed"
+                                            value={settings.template_html}
+                                            onChange={e => setSettings({...settings, template_html: e.target.value})}
+                                            spellCheck={false}
+                                        />
+                                    ) : (
+                                        <div className="bg-white">
+                                            <ReactQuill 
+                                                theme="snow" 
+                                                value={settings.template_html} 
+                                                onChange={val => setSettings({...settings, template_html: val})}
+                                                style={{ height: '300px' }}
+                                            />
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>
