@@ -22,6 +22,20 @@ module.exports = (app, db, authenticateAdmin) => {
                   .replace(/\0/g, '\\00');
     };
 
+    const maskSensitiveData = (data) => {
+        if (!data) return data;
+        try {
+            let str = typeof data === 'string' ? data : JSON.stringify(data);
+            // Replace common password fields and client secrets globally in JSON or Query strings
+            // Covers "password": "...", "password": 1234, "passward": "...", etc.
+            return str.replace(/"([^"]*(?:password|pass|secret|bind_password|client_secret|token|api_key)[^"]*)"\s*:\s*("[^"]*"|[^,} \]]+)/gi, (match, p1) => {
+                return `"${p1}":"********"`;
+            });
+        } catch(e) {
+            return "Unparseable Data";
+        }
+    };
+
     // --- Middleware: Global Proxy Logger (External APIs only) ---
     const proxyLogger = async (req, res, next) => {
         const originalJson = res.json;
@@ -30,16 +44,20 @@ module.exports = (app, db, authenticateAdmin) => {
             const status = res.statusCode;
             const appEntry = req.externalApp || null;
             
+            const safeBody = maskSensitiveData(req.body || {});
+            const safeResponse = maskSensitiveData(data || {});
+
             // Log for external proxy routes
             db.run(
-                'INSERT INTO proxy_logs (app_id, endpoint, method, query_params, payload, status) VALUES (?, ?, ?, ?, ?, ?)',
+                'INSERT INTO proxy_logs (app_id, endpoint, method, query_params, payload, status, response_payload) VALUES (?, ?, ?, ?, ?, ?, ?)',
                 [
                     appEntry ? appEntry.id : null,
                     req.originalUrl || req.path,
                     req.method,
-                    JSON.stringify(req.query || {}),
-                    JSON.stringify(req.body || {}),
-                    status
+                    maskSensitiveData(req.query || {}),
+                    safeBody,
+                    status,
+                    safeResponse
                 ]
             ).catch(e => console.error('[PROXY LOG ERROR]:', e.message));
 
@@ -223,6 +241,14 @@ module.exports = (app, db, authenticateAdmin) => {
      *               is_raw:
      *                 type: boolean
      *                 description: "Si true, n'utilise pas le template HTML global"
+     *               footer1:
+     *                 type: string
+     *               footer2:
+     *                 type: string
+     *               footer3:
+     *                 type: string
+     *               footerColor:
+     *                 type: string
      *               attachments:
      *                 type: array
      *                 description: "Pièces jointes (optionnel)"
@@ -244,7 +270,7 @@ module.exports = (app, db, authenticateAdmin) => {
      *         description: Erreur interne lors de l'envoi
      */
     proxyRouter.post('/mail/send', verifyApiKey, async (req, res) => {
-        const { to, subject, content, from_name, from_email, is_raw, attachments } = req.body;
+        const { to, subject, content, from_name, from_email, is_raw, attachments, footer1, footer2, footer3, footerColor } = req.body;
         if (!to || !subject || !content) {
             return res.status(400).json({ error: 'to, subject and content are required' });
         }
@@ -253,9 +279,10 @@ module.exports = (app, db, authenticateAdmin) => {
             if (app.locals.sendMail) {
                 await app.locals.sendMail(to, subject, content, {
                     fromName: from_name,
-                    fromEmail: from_email,
+                    from_email: from_email,
                     useTemplate: is_raw === true ? false : true,
-                    attachments: attachments
+                    attachments: attachments,
+                    footer1, footer2, footer3, footerColor
                 });
                 console.log(`[PROXY MAIL] Sent for ${req.externalApp.name}: ${to} (Attachments: ${attachments?.length || 0})`);
                 res.json({ status: 'success' });
@@ -264,7 +291,7 @@ module.exports = (app, db, authenticateAdmin) => {
             }
         } catch (error) {
             console.error('[PROXY MAIL] Error:', error.message);
-            res.status(500).json({ error: error.message });
+            res.status(error.status || 500).json({ error: error.message });
         }
     });
 
@@ -916,14 +943,52 @@ module.exports = (app, db, authenticateAdmin) => {
     });
 
     adminRouter.get('/logs', authenticateAdmin, async (req, res) => {
-        const logs = await db.all(`
+        const { app_id, status, limit, offset, search, start_date, end_date } = req.query;
+        let query = `
             SELECT pl.*, ea.name as app_name 
             FROM proxy_logs pl
             LEFT JOIN external_apps ea ON pl.app_id = ea.id
-            ORDER BY pl.timestamp DESC 
-            LIMIT 50
-        `);
-        res.json(logs);
+            WHERE 1=1
+        `;
+        const params = [];
+
+        if (app_id && app_id !== 'all') {
+            query += ' AND pl.app_id = ?';
+            params.push(app_id);
+        }
+        if (status === 'error') {
+            query += ' AND pl.status >= 400';
+        } else if (status === 'success') {
+            query += ' AND pl.status < 400';
+        }
+        if (search) {
+            query += ' AND (pl.endpoint LIKE ? OR pl.payload LIKE ? OR pl.response_payload LIKE ? OR ea.name LIKE ?)';
+            params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+        }
+        if (start_date) {
+            query += ' AND datetime(pl.timestamp) >= datetime(?)';
+            params.push(start_date);
+        }
+        if (end_date) {
+            query += ' AND datetime(pl.timestamp) <= datetime(?)';
+            params.push(end_date);
+        }
+
+        try {
+            const count = await db.get(`SELECT COUNT(*) as total FROM (${query})`, params);
+            
+            query += ' ORDER BY pl.timestamp DESC LIMIT ? OFFSET ?';
+            params.push(parseInt(limit) || 50, parseInt(offset) || 0);
+
+            const logs = await db.all(query, params);
+            res.json({ 
+                total: count ? count.total : 0, 
+                logs: logs || [] 
+            });
+        } catch (error) {
+            console.error('[LOGS API] Error:', error.message);
+            res.status(500).json({ error: error.message });
+        }
     });
 
     // --- Security Settings API ---

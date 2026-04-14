@@ -25,12 +25,69 @@ module.exports = (app, db, authenticateAdmin) => {
      */
     router.get('/', authenticateAdmin, async (req, res) => {
         try {
-            const users = await db.all('SELECT id, username, email, role FROM users');
+            const users = await db.all('SELECT id, username, email, role, is_ad FROM users');
             res.json(users);
         } catch (error) {
             res.status(500).json({ message: error.message });
         }
     });
+
+    // --- ROLES API ---
+    router.get('/roles', authenticateAdmin, async (req, res) => {
+        try {
+            const roles = await db.all('SELECT * FROM roles');
+            // Parse permissions back to array
+            const parsedRoles = roles.map(r => ({
+                ...r,
+                permissions: JSON.parse(r.permissions || '[]')
+            }));
+            res.json(parsedRoles);
+        } catch (error) {
+            res.status(500).json({ message: error.message });
+        }
+    });
+
+    router.post('/roles', authenticateAdmin, async (req, res) => {
+        const { name, permissions } = req.body;
+        if (!name) return res.status(400).json({ message: 'Le nom du rôle est requis' });
+        try {
+            const result = await db.run(
+                'INSERT INTO roles (name, permissions) VALUES (?, ?)',
+                [name, JSON.stringify(permissions || [])]
+            );
+            res.status(201).json({ id: result.lastID, name, permissions: permissions || [] });
+        } catch (error) {
+            if (error.message.includes('UNIQUE constraint failed')) {
+                return res.status(400).json({ message: 'Ce rôle existe déjà' });
+            }
+            res.status(500).json({ message: error.message });
+        }
+    });
+
+    router.put('/roles/:id', authenticateAdmin, async (req, res) => {
+        const { id } = req.params;
+        const { name, permissions } = req.body;
+        try {
+            await db.run(
+                'UPDATE roles SET name = ?, permissions = ? WHERE id = ?',
+                [name, JSON.stringify(permissions || []), id]
+            );
+            res.json({ message: 'Rôle mis à jour' });
+        } catch (error) {
+            res.status(500).json({ message: error.message });
+        }
+    });
+
+    router.delete('/roles/:id', authenticateAdmin, async (req, res) => {
+        const { id } = req.params;
+        try {
+            await db.run('DELETE FROM roles WHERE id = ?', [id]);
+            res.json({ message: 'Rôle supprimé' });
+        } catch (error) {
+            res.status(500).json({ message: error.message });
+        }
+    });
+    // -----------------
 
     /**
      * @openapi
@@ -60,18 +117,21 @@ module.exports = (app, db, authenticateAdmin) => {
      *         description: Utilisateur créé
      */
     router.post('/', authenticateAdmin, async (req, res) => {
-        const { username, password, email, role } = req.body;
-        if (!username || !password) {
+        const { username, password, email, role, is_ad } = req.body;
+        
+        // Mode local : mot de passe requis. Mode AD : mot de passe facultatif
+        const isAdUser = is_ad ? 1 : 0;
+        if (!username || (!password && !isAdUser)) {
             return res.status(400).json({ message: 'Nom d’utilisateur et mot de passe requis' });
         }
 
         try {
-            const hashedPassword = await bcrypt.hash(password, 10);
+            const hashedPassword = password ? await bcrypt.hash(password, 10) : '';
             const result = await db.run(
-                'INSERT INTO users (username, password, email, role) VALUES (?, ?, ?, ?)',
-                [username, hashedPassword, email || '', role || 'user']
+                'INSERT INTO users (username, password, email, role, is_ad) VALUES (?, ?, ?, ?, ?)',
+                [username, hashedPassword, email || '', role || 'user', isAdUser]
             );
-            res.status(201).json({ id: result.lastID, username, email, role });
+            res.status(201).json({ id: result.lastID, username, email, role, is_ad: isAdUser });
         } catch (error) {
             if (error.message.includes('UNIQUE constraint failed')) {
                 return res.status(400).json({ message: 'Cet utilisateur existe déjà' });
@@ -100,20 +160,35 @@ module.exports = (app, db, authenticateAdmin) => {
      */
     router.put('/:id', authenticateAdmin, async (req, res) => {
         const { id } = req.params;
-        const { username, email, role, password } = req.body;
+        const { username, email, role, password, is_ad } = req.body;
+        const isAdUser = is_ad !== undefined ? (is_ad ? 1 : 0) : null;
 
         try {
             if (password) {
                 const hashedPassword = await bcrypt.hash(password, 10);
-                await db.run(
-                    'UPDATE users SET username = ?, email = ?, role = ?, password = ? WHERE id = ?',
-                    [username, email, role, hashedPassword, id]
-                );
+                if (isAdUser !== null) {
+                    await db.run(
+                        'UPDATE users SET username = ?, email = ?, role = ?, password = ?, is_ad = ? WHERE id = ?',
+                        [username, email, role, hashedPassword, isAdUser, id]
+                    );
+                } else {
+                    await db.run(
+                        'UPDATE users SET username = ?, email = ?, role = ?, password = ? WHERE id = ?',
+                        [username, email, role, hashedPassword, id]
+                    );
+                }
             } else {
-                await db.run(
-                    'UPDATE users SET username = ?, email = ?, role = ? WHERE id = ?',
-                    [username, email, role, id]
-                );
+                if (isAdUser !== null) {
+                    await db.run(
+                        'UPDATE users SET username = ?, email = ?, role = ?, is_ad = ? WHERE id = ?',
+                        [username, email, role, isAdUser, id]
+                    );
+                } else {
+                    await db.run(
+                        'UPDATE users SET username = ?, email = ?, role = ? WHERE id = ?',
+                        [username, email, role, id]
+                    );
+                }
             }
             res.json({ message: 'Utilisateur mis à jour' });
         } catch (error) {

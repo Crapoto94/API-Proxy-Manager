@@ -16,7 +16,10 @@ module.exports = function(app, db, authenticateAdmin) {
 
         if (s.global_enable === 0 || s.global_enable === false) {
             console.log(`[MAIL SYSTEM] Envoi global désactivé. Mail ignoré pour: ${to}`);
-            throw new Error('L\'envoi global de mails est désactivé dans les paramètres.');
+            // Return null or handle gracefully instead of throwing if we want to avoid 500
+            const error = new Error('L\'envoi global de mails est désactivé dans les paramètres.');
+            error.status = 400;
+            throw error;
         }
 
         const senderEmail = options.fromEmail || s.sender_email;
@@ -32,15 +35,32 @@ module.exports = function(app, db, authenticateAdmin) {
 
         if (useTemplate) {
             let htmlTemplate = (s.template_html || '{{content}}');
-            html = htmlTemplate.replace('{{content}}', content);
+            
+            // Substitue les variables de pied de page
+            const footer1 = options.footer1 || s.footer_line1 || '';
+            const footer2 = options.footer2 || s.footer_line2 || '';
+            const footer3 = options.footer3 || s.footer_line3 || '';
+            const footerColor = options.footerColor || s.footer_color || '#004a99';
 
-            // Logo CID handling
-            const logoPath = path.join(__dirname, '..', 'magapp_img', 'logo_dsi.png');
-            if (html.includes('logo_dsi.png') && fs.existsSync(logoPath)) {
-                const cid = 'logo_dsi';
+            html = htmlTemplate.replace('{{content}}', content)
+                             .split('{{footer1}}').join(footer1)
+                             .split('{{footer2}}').join(footer2)
+                             .split('{{footer3}}').join(footer3)
+                             .split('{{footerColor}}').join(footerColor);
+
+            // Logo CID handling - Priorité à Ivry.png si mentionné ou si logo_dsi est recherché
+            let logoToUse = 'Ivry.png';
+            if (!fs.existsSync(path.join(__dirname, '..', 'magapp_img', 'Ivry.png'))) {
+                logoToUse = 'logo_dsi.png';
+            }
+
+            const logoPath = path.join(__dirname, '..', 'magapp_img', logoToUse);
+            if ((html.includes('logo_dsi.png') || html.includes('Ivry.png')) && fs.existsSync(logoPath)) {
+                const cid = 'logo_brand';
                 html = html.split('logo_dsi.png').join(`cid:${cid}`);
+                html = html.split('Ivry.png').join(`cid:${cid}`);
                 attachments.push({
-                    filename: 'logo_dsi.png',
+                    filename: logoToUse,
                     content: fs.readFileSync(logoPath).toString('base64'),
                     cid: cid
                 });
@@ -181,6 +201,11 @@ module.exports = function(app, db, authenticateAdmin) {
      *         application/json:
      *           schema:
      *             type: object
+     *             properties:
+     *               footer_line1: { type: string }
+     *               footer_line2: { type: string }
+     *               footer_line3: { type: string }
+     *               footer_color: { type: string }
      *     responses:
      *       200:
      *         description: Mise à jour réussie
@@ -193,13 +218,15 @@ module.exports = function(app, db, authenticateAdmin) {
                     smtp_host = ?, smtp_port = ?, smtp_user = ?, smtp_pass = ?, 
                     smtp_secure = ?, proxy_host = ?, proxy_port = ?, 
                     sender_email = ?, sender_name = ?, api_key = ?, template_html = ?,
-                    global_enable = ?, use_api = ?, api_url = ?
+                    global_enable = ?, use_api = ?, api_url = ?,
+                    footer_line1 = ?, footer_line2 = ?, footer_line3 = ?, footer_color = ?
                 WHERE id = 1
             `, [
                 s.smtp_host, s.smtp_port, s.smtp_user, s.smtp_pass,
                 s.smtp_secure, s.proxy_host, s.proxy_port,
                 s.sender_email, s.sender_name, s.api_key, s.template_html,
-                s.global_enable ? 1 : 0, s.use_api ? 1 : 0, s.api_url
+                s.global_enable ? 1 : 0, s.use_api ? 1 : 0, s.api_url,
+                s.footer_line1, s.footer_line2, s.footer_line3, s.footer_color
             ]);
             res.json({ message: 'Paramètres mail mis à jour' });
         } catch (error) {
@@ -237,7 +264,7 @@ module.exports = function(app, db, authenticateAdmin) {
             res.json({ message: 'Mail de test envoyé avec succès' });
         } catch (error) {
             console.error('[MAIL SYSTEM] Route error:', error);
-            res.status(500).json({ message: error.message });
+            res.status(error.status || 500).json({ message: error.message });
         }
     });
 

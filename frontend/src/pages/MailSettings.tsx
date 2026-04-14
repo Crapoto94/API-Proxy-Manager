@@ -11,41 +11,28 @@ const MailSettings: React.FC = () => {
     const [settings, setSettings] = useState<any>({
         smtp_host: '', smtp_port: 587, smtp_user: '', smtp_pass: '',
         smtp_secure: 'tls', sender_email: '', sender_name: 'APM Proxy',
+        footer_line1: 'DIRECTION DES SYSTEMES D\'INFORMATION',
+        footer_line2: 'Assistance Technique',
+        footer_line3: 'Téléphone : 01 49 60 29 88 • Interne : 29 88',
+        footer_color: '#004a99',
         template_html: `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
-    <title>Notification DSI</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <style type="text/css">
-        body { margin: 0; padding: 0; min-width: 100%; background-color: #f4f7f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        .content { width: 100%; max-width: 600px; }  
-        .innerpadding { padding: 40px 30px 40px 30px; }
-        .border { border: 1px solid #e1e7ed; border-radius: 12px; }
-        .bodycopy { font-size: 16px; line-height: 1.6; color: #2d3748; }
-        .footer { padding: 30px 30px 30px 30px; }
-        .footercopy { font-size: 12px; color: #718096; line-height: 20px; }
-        .accent { color: #2b6cb0; font-weight: 600; text-decoration: none; }
-        @media only screen and (max-width: 550px) {
-            .content { width: 100% !important; }
-        }
-    </style>
-</head>
-<body bgcolor="#f4f7f9">
-    <table width="100%" bgcolor="#f4f7f9" border="0" cellpadding="0" cellspacing="0">
+<body style="margin: 0; padding: 0; min-width: 100%; background-color: #f4f7f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+    <table width="100%" bgcolor="#f4f7f9" border="0" cellpadding="0" cellspacing="0" style="background-color: #f4f7f9;">
     <tr>
-        <td>
-            <table class="content" align="center" cellpadding="0" cellspacing="0" border="0" style="margin-top: 40px; margin-bottom: 40px;">
+        <td style="padding: 40px 0;">
+            <table align="center" cellpadding="0" cellspacing="0" border="0" style="width: 100%; max-width: 750px;">
                 <tr>
-                    <td align="center" style="padding-bottom: 40px;">
-                        <img src="logo_dsi.png" width="220" border="0" alt="Direction des Systèmes d'Information" />
+                    <td align="center" style="padding-bottom: 30px;">
+                        <img src="Ivry.png" width="180" border="0" alt="Ivry s/ Seine" />
+                        <div style="font-size: 18px; font-weight: 700; color: #1a202c; margin-top: 10px;">Ville d'Ivry-sur-seine</div>
                     </td>
                 </tr>
                 <tr>
-                    <td class="innerpadding border" bgcolor="#ffffff">
+                    <td bgcolor="#ffffff" style="background-color: #ffffff; padding: 40px; border: 1px solid #e1e7ed; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
                         <table width="100%" border="0" cellspacing="0" cellpadding="0">
                             <tr>
-                                <td class="bodycopy">
+                                <td style="font-size: 16px; line-height: 1.6; color: #2d3748;">
                                     {{content}}
                                 </td>
                             </tr>
@@ -53,13 +40,19 @@ const MailSettings: React.FC = () => {
                     </td>
                 </tr>
                 <tr>
-                    <td class="footer" align="center">
+                    <td align="center" style="padding: 30px;">
                         <table width="100%" border="0" cellspacing="0" cellpadding="0">
                             <tr>
-                                <td align="center" class="footercopy">
-                                    <span style="text-transform: uppercase; letter-spacing: 1.2px; font-weight: 800; color: #a0aec0; font-size: 10px;">Assistance Technique</span><br /><br />
-                                    Téléphone : <span class="accent">01 49 60 29 88</span> &bull; Interne : <span class="accent">29 88</span><br />
-                                    Email : <a href="mailto:hot-line@ivry94.fr" class="accent">hot-line@ivry94.fr</a>
+                                <td height="4" style="height: 4px; background: linear-gradient(to right, #e53e3e, {{footerColor}}); border-radius: 2px;"></td>
+                            </tr>
+                        </table>
+                        <br />
+                        <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                            <tr>
+                                <td align="center" style="color: #718096; font-size: 13px; line-height: 20px;">
+                                    <div style="text-transform: uppercase; letter-spacing: 1.2px; font-weight: 800; color: {{footerColor}}; font-size: 11px; margin-bottom: 5px;">{{footer1}}</div>
+                                    <div style="font-weight: 600; color: #4a5568;">{{footer2}}</div>
+                                    <div>{{footer3}}</div>
                                 </td>
                             </tr>
                         </table>
@@ -98,11 +91,37 @@ const MailSettings: React.FC = () => {
         try {
             await axios.post(`${API_BASE}/mail-settings`, settings);
             setStatus({ type: 'success', msg: 'Configuration enregistrée avec succès' });
-        } catch (err) {
-            setStatus({ type: 'error', msg: 'Erreur lors de l\'enregistrement' });
+        } catch (err: any) {
+            setStatus({ type: 'error', msg: err.response?.data?.message || err.message });
         } finally {
             setSaving(false);
         }
+    };
+
+    const getPreviewHtml = () => {
+        let html = settings.template_html || '{{content}}';
+        
+        // Simulation du remplacement backend pour l'aperçu
+        const footer1 = settings.footer_line1 || '';
+        const footer2 = settings.footer_line2 || '';
+        const footer3 = settings.footer_line3 || '';
+        const footerColor = settings.footer_color || '#004a99';
+        const contentSample = `<div style="padding: 20px; background: #fffbeb; border: 1px dashed #f59e0b; color: #92400e; border-radius: 8px;">
+            Ceci est un exemple de contenu de message ({{content}}).
+        </div>`;
+
+        html = html.split('{{content}}').join(contentSample)
+                   .split('{{footer1}}').join(footer1)
+                   .split('{{footer2}}').join(footer2)
+                   .split('{{footer3}}').join(footer3)
+                   .split('{{footerColor}}').join(footerColor);
+
+        // Correction du logo pour l'aperçu (chemin absolu vers le backend)
+        const logoUrl = `${API_BASE_URL}/magapp_img/Ivry.png`;
+        html = html.split('Ivry.png').join(logoUrl);
+        html = html.split('logo_dsi.png').join(`${API_BASE_URL}/magapp_img/logo_dsi.png`);
+        
+        return html;
     };
 
     const handleTest = async () => {
@@ -284,6 +303,56 @@ const MailSettings: React.FC = () => {
                                     />
                                 </div>
                             </div>
+
+                            <div className="pt-4 border-t border-slate-100">
+                                <h4 className="text-[11px] font-bold text-emerald-600 uppercase tracking-widest mb-4">Variables du pied de page (Mode APM)</h4>
+                                <div className="grid grid-cols-2 gap-6">
+                                    <div className="col-span-2 space-y-2">
+                                        <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Ligne 1 (Département)</label>
+                                        <input 
+                                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-blue-500 transition-all font-medium"
+                                            value={settings.footer_line1 || ''} 
+                                            onChange={e => setSettings({...settings, footer_line1: e.target.value})}
+                                            placeholder="ex: DIRECTION DES SYSTEMES D'INFORMATION"
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Ligne 2 (Contact)</label>
+                                        <input 
+                                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-blue-500 transition-all font-medium"
+                                            value={settings.footer_line2 || ''} 
+                                            onChange={e => setSettings({...settings, footer_line2: e.target.value})}
+                                            placeholder="ex: Assistance Technique"
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Ligne 3 (Détails)</label>
+                                        <input 
+                                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-blue-500 transition-all font-medium"
+                                            value={settings.footer_line3 || ''} 
+                                            onChange={e => setSettings({...settings, footer_line3: e.target.value})}
+                                            placeholder="ex: Téléphone : 01 49 60 29 88"
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Couleur d'accentuation (Pied de page)</label>
+                                        <div className="flex gap-4">
+                                            <input 
+                                                type="color"
+                                                className="h-12 w-12 rounded-lg border border-slate-200 cursor-pointer"
+                                                value={settings.footer_color || '#004a99'} 
+                                                onChange={e => setSettings({...settings, footer_color: e.target.value})}
+                                            />
+                                            <input 
+                                                className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-blue-500 transition-all font-medium uppercase"
+                                                value={settings.footer_color || '#004a99'} 
+                                                onChange={e => setSettings({...settings, footer_color: e.target.value})}
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
                             <div className="space-y-4">
                                 <div className="flex items-center justify-between">
                                     <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Enveloppe HTML Global ({"{{content}}"})</label>
@@ -299,18 +368,25 @@ const MailSettings: React.FC = () => {
                                 <div className="rounded-2xl border border-slate-200 overflow-hidden shadow-inner bg-slate-50">
                                     {showHtml ? (
                                         <textarea
-                                            className="w-full h-[300px] p-6 font-mono text-xs bg-slate-900 text-blue-100 outline-none resize-none leading-relaxed"
+                                            className="w-full h-[500px] p-6 font-mono text-xs bg-slate-900 text-blue-100 outline-none resize-none leading-relaxed"
                                             value={settings.template_html}
                                             onChange={e => setSettings({...settings, template_html: e.target.value})}
                                             spellCheck={false}
                                         />
                                     ) : (
-                                        <div className="bg-white">
-                                            <ReactQuill 
-                                                theme="snow" 
-                                                value={settings.template_html} 
-                                                onChange={val => setSettings({...settings, template_html: val})}
-                                                style={{ height: '300px' }}
+                                        <div className="bg-white border-t border-slate-200">
+                                            <div className="bg-slate-50 px-4 py-2 border-b border-slate-200 flex justify-between items-center">
+                                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Aperçu du rendu final</span>
+                                                <div className="flex gap-1.5">
+                                                    <div className="w-2 h-2 rounded-full bg-slate-200" />
+                                                    <div className="w-2 h-2 rounded-full bg-slate-200" />
+                                                    <div className="w-2 h-2 rounded-full bg-slate-200" />
+                                                </div>
+                                            </div>
+                                            <iframe 
+                                                title="Mail Preview"
+                                                srcDoc={getPreviewHtml()} 
+                                                className="w-full h-[600px] border-none"
                                             />
                                         </div>
                                     )}

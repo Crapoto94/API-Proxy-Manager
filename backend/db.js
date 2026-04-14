@@ -12,12 +12,19 @@ async function setupDb() {
     // Most tables will already be there from the copy
     
     await db.exec(`
+        CREATE TABLE IF NOT EXISTS roles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE,
+            permissions TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE,
             password TEXT,
             role TEXT DEFAULT 'user',
-            email TEXT
+            email TEXT,
+            is_ad INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS messages (
@@ -49,7 +56,11 @@ async function setupDb() {
             api_key TEXT,
             api_url TEXT,
             proxy_host TEXT,
-            proxy_port TEXT
+            proxy_port TEXT,
+            footer_line1 TEXT,
+            footer_line2 TEXT,
+            footer_line3 TEXT,
+            footer_color TEXT
         );
 
         CREATE TABLE IF NOT EXISTS frizbi_settings (
@@ -174,6 +185,19 @@ async function setupDb() {
     // Migration to add authorized_routes if it doesn't exist (for existing databases)
     try {
         await db.run('ALTER TABLE external_apps ADD COLUMN authorized_routes TEXT DEFAULT \'["*"]\'');
+    } catch (e) {
+        // Column probably already exists
+    }
+
+    try {
+        await db.run('ALTER TABLE users ADD COLUMN is_ad INTEGER DEFAULT 0');
+    } catch (e) {
+        // Column probably already exists
+    }
+
+    try {
+        await db.run('ALTER TABLE proxy_logs ADD COLUMN response_payload TEXT');
+        console.log('[DB] Colonne response_payload ajoutée à proxy_logs');
     } catch (e) {
         // Column probably already exists
     }

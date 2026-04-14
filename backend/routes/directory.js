@@ -79,6 +79,9 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
         });
     }
 
+    // Expose for server.js usage
+    app.locals.authenticateAD = authenticateAD;
+
     // --- AD Settings Routes ---
     /**
      * @openapi
@@ -258,6 +261,78 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
     });
 
     // --- Azure AD Settings Routes ---
+    app.get('/api/admin/ad/search', authenticateAdmin, async (req, res) => {
+        const { q } = req.query;
+        if (!q || q.length < 2) return res.json([]);
+
+        try {
+            const config = await db.get('SELECT * FROM ad_settings WHERE id = 1');
+            if (!config || !config.is_enabled) return res.status(400).json({ message: 'Active Directory désactivé' });
+            
+            // Re-fetch bind password
+            if (config.bind_password === '********' || config.bind_password === '••••••••') {
+                const dbConfig = await db.get('SELECT bind_password FROM ad_settings WHERE id = 1');
+                config.bind_password = dbConfig.bind_password;
+            }
+
+            const client = ldap.createClient({
+                url: `ldap://${config.host}:${config.port}`,
+                connectTimeout: 5000,
+                timeout: 5000
+            });
+
+            client.on('error', (err) => {
+                res.status(500).json({ message: 'LDAP Error: ' + err.message });
+            });
+
+            client.bind(config.bind_dn, config.bind_password, (err) => {
+                if (err) {
+                    client.destroy();
+                    return res.status(500).json({ message: 'LDAP Bind Error: ' + err.message });
+                }
+
+                const safeQuery = escapeLDAPSearchFilter(q);
+                const searchOptions = {
+                    filter: `(&(objectClass=user)(!(objectClass=computer))(|(sAMAccountName=*${safeQuery}*)(displayName=*${safeQuery}*)(mail=*${safeQuery}*)))`,
+                    scope: 'sub',
+                    attributes: ['sAMAccountName', 'displayName', 'mail'],
+                    sizeLimit: 20
+                };
+
+                const results = [];
+                client.search(config.base_dn, searchOptions, (err, searchRes) => {
+                    if (err) {
+                        client.destroy();
+                        return res.status(500).json({ message: 'Search initiation error: ' + err.message });
+                    }
+
+                    searchRes.on('searchEntry', (entry) => {
+                        const pojo = entry.pojo || entry.object;
+                        const obj = {};
+                        if (pojo.attributes) {
+                            pojo.attributes.forEach(attr => {
+                                obj[attr.type] = attr.values.length === 1 ? attr.values[0] : attr.values;
+                            });
+                        }
+                        results.push(obj);
+                    });
+
+                    searchRes.on('error', (err) => {
+                        client.destroy();
+                        res.status(500).json({ message: 'Search execution error: ' + err.message });
+                    });
+
+                    searchRes.on('end', () => {
+                        client.destroy();
+                        res.json(results);
+                    });
+                });
+            });
+        } catch (error) {
+            res.status(500).json({ message: 'Erreur recherche AD: ' + error.message });
+        }
+    });
+
     /**
      * @openapi
      * /api/azure-ad-settings/status:

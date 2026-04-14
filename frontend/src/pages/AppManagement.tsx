@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { 
   Plus, 
@@ -7,8 +8,7 @@ import {
   Key, 
   Trash2, 
   Copy, 
-  CheckCircle2, 
-  X,
+  CheckCircle2,
   Activity,
   ShieldCheck,
   Smartphone,
@@ -46,6 +46,7 @@ const AVAILABLE_PERMISSIONS = [
 import { RefreshCw, Edit3 } from 'lucide-react';
 
 const AppManagement: React.FC = () => {
+    const navigate = useNavigate();
     const [apps, setApps] = useState<ExternalApp[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
@@ -57,8 +58,6 @@ const AppManagement: React.FC = () => {
     const [selectedPermissions, setSelectedPermissions] = useState<string[]>(['*']);
     
     const [copyStatus, setCopyStatus] = useState<number | null>(null);
-    const [selectedAppLogs, setSelectedAppLogs] = useState<any[] | null>(null);
-    const [viewingLogApp, setViewingLogApp] = useState<ExternalApp | null>(null);
 
     const fetchApps = async () => {
         try {
@@ -71,15 +70,7 @@ const AppManagement: React.FC = () => {
         }
     };
 
-    const fetchLogs = async (app: ExternalApp) => {
-        setViewingLogApp(app);
-        try {
-            const res = await axios.get(`${API_BASE}/apps/${app.id}/logs`);
-            setSelectedAppLogs(res.data);
-        } catch (err) {
-            console.error('Failed to fetch logs:', err);
-        }
-    };
+
 
     useEffect(() => {
         fetchApps();
@@ -335,7 +326,7 @@ const AppManagement: React.FC = () => {
                                         <span>{app.is_active === 1 ? 'DÉSACTIVER' : 'ACTIVER'}</span>
                                     </button>
                                     <button 
-                                        onClick={() => fetchLogs(app)}
+                                        onClick={() => navigate(`/logs?app=${app.id}`)}
                                         className="flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs bg-slate-100 text-slate-600 hover:bg-slate-200 transition-all"
                                     >
                                         <Activity size={14} />
@@ -399,67 +390,7 @@ const AppManagement: React.FC = () => {
                 </div>
             )}
 
-            {viewingLogApp && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 animate-in fade-in duration-300">
-                    <div className="absolute inset-0 bg-[#0f172a]/80 backdrop-blur-sm" onClick={() => { setViewingLogApp(null); setSelectedAppLogs(null); }}></div>
-                    <div className="bg-white w-full max-w-4xl max-h-[80vh] rounded-[2.5rem] shadow-2xl relative overflow-hidden flex flex-col animate-in zoom-in-95 duration-300">
-                        <div className="px-10 py-8 border-b border-slate-100 flex items-center justify-between">
-                            <div>
-                                <h3 className="text-xl font-black text-slate-900">Logs : {viewingLogApp.name}</h3>
-                                <p className="text-sm font-medium text-slate-500 mt-1">Dernières 100 transactions proxy</p>
-                            </div>
-                            <button onClick={() => { setViewingLogApp(null); setSelectedAppLogs(null); }} className="p-3 hover:bg-slate-50 rounded-2xl text-slate-400 transition-all"><X size={24} /></button>
-                        </div>
-                            {!selectedAppLogs ? (
-                                <div className="py-20 text-center"><Loader2 className="animate-spin mx-auto text-slate-300" size={32} /></div>
-                            ) : selectedAppLogs.length === 0 ? (
-                                <div className="py-20 text-center font-bold text-slate-400 grayscale italic text-sm">AUCUN LOG DISPONIBLE</div>
-                            ) : (
-                                <div className="p-6 overflow-y-auto space-y-4">
-                                    {selectedAppLogs.map((log: any) => (
-                                        <div key={log.id} className="bg-slate-50 rounded-2xl border border-slate-100 overflow-hidden">
-                                            <div className="p-4 flex items-center justify-between hover:bg-slate-100 cursor-pointer transition-colors" onClick={() => {
-                                                const el = document.getElementById(`log-details-${log.id}`);
-                                                if (el) el.classList.toggle('hidden');
-                                            }}>
-                                                <div className="flex items-center gap-4">
-                                                    <span className={`px-2 py-1 rounded-lg text-[10px] font-black ${
-                                                        log.method === 'POST' ? 'bg-blue-100 text-blue-600' : 'bg-amber-100 text-amber-600'
-                                                    }`}>{log.method}</span>
-                                                    <span className="font-bold text-slate-700 text-sm truncate max-w-[200px] md:max-w-md">{log.endpoint}</span>
-                                                </div>
-                                                <div className="flex items-center gap-4">
-                                                    <span className={`px-3 py-1 rounded-xl font-black text-xs ${
-                                                        log.status < 400 ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'
-                                                    }`}>{log.status}</span>
-                                                    <span className="font-mono text-[10px] text-slate-400">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                                                </div>
-                                            </div>
-                                            <div id={`log-details-${log.id}`} className="hidden px-6 py-4 border-t border-slate-100 bg-white space-y-4">
-                                                {log.query_params && log.query_params !== '{}' && (
-                                                    <div>
-                                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Arguments URL (Query)</p>
-                                                        <pre className="p-3 bg-slate-50 rounded-xl text-[11px] font-mono text-slate-600 overflow-x-auto">
-                                                            {JSON.stringify(JSON.parse(log.query_params), null, 2)}
-                                                        </pre>
-                                                    </div>
-                                                )}
-                                                {log.payload && log.payload !== '{}' && (
-                                                    <div>
-                                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Données envoyées (Payload)</p>
-                                                        <pre className="p-3 bg-slate-50 rounded-xl text-[11px] font-mono text-slate-600 overflow-x-auto">
-                                                            {log.payload.startsWith('{') ? JSON.stringify(JSON.parse(log.payload), null, 2) : log.payload}
-                                                        </pre>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                    </div>
-                </div>
-            )}
+
         </div>
     );
 };

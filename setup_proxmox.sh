@@ -18,10 +18,6 @@ if ! [ -x "$(command -v docker-compose)" ]; then
   sudo apt-get install -y docker-compose
 fi
 
-# Nettoyage si un ancien conteneur nommé 'portainer' bloque (optionnel mais conseillé)
-# Si vous avez déjà un portainer, démentez cette ligne ou changez le port dans docker-compose.yml
-# docker rm -f portainer 2>/dev/null
-
 # 2. Configuration de l'IP (nécessaire pour le lien Frontend -> Backend)
 if [ -z "$1" ]; then
   IP_ADDR=$(hostname -I | awk '{print $1}')
@@ -38,11 +34,10 @@ echo "APM_API_URL=http://$IP_ADDR:8001" > .env
 echo "Fichier .env généré avec APM_API_URL=http://$IP_ADDR:8001"
 
 # 4. Lancement de Docker Compose
-echo "Lancement des conteneurs (Backend, Frontend, Portainer)..."
+echo "Lancement des conteneurs (Backend, Frontend)..."
 docker-compose up -d --build
 
 echo ""
 echo "--- Installation Terminée ---"
 echo "Accès Application : http://$IP_ADDR:8000"
-echo "Accès Portainer   : http://$IP_ADDR:9000"
 echo "API (Swagger)    : http://$IP_ADDR:8001/api-docs"

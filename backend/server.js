@@ -57,6 +57,7 @@ const swaggerDocs = swaggerJsDoc(swaggerOptions);
 
 app.use(cors());
 app.use(express.json());
+app.use('/magapp_img', express.static(path.join(__dirname, 'magapp_img')));
 
 // Middleware d'authentification simple (à affiner)
 const authenticateJWT = (req, res, next) => {
@@ -235,14 +236,60 @@ async function startServer() {
     app.post('/api/auth/login', async (req, res) => {
         const { username, password } = req.body;
         try {
-            const user = await db.get('SELECT * FROM users WHERE username = ?', [username]);
-            if (user && await bcrypt.compare(password, user.password)) {
-                const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, SECRET_KEY);
-                res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
+            const user = await db.get('SELECT * FROM users WHERE LOWER(username) = LOWER(?)', [username]);
+            if (!user) {
+                return res.status(401).json({ message: 'Identifiants invalides' });
+            }
+
+            let isValid = false;
+            
+            // Si c'est le compte admin par défaut, force la vérification locale pour ne pas bloquer si AD échoue
+            if (user.is_ad && username !== 'admin') {
+                if (app.locals.authenticateAD) {
+                    const adConfig = await db.get('SELECT * FROM ad_settings WHERE id = 1');
+                    // On rechope le "vrai" bind_password si besoin, mais authenticateAD dans directory.js le gère ?
+                    // Non, l'appel attend le DTO config
+                    if (adConfig.bind_password === '********' || adConfig.bind_password === '••••••••') {
+                        const dbConfig = await db.get('SELECT bind_password FROM ad_settings WHERE id = 1');
+                        adConfig.bind_password = dbConfig.bind_password;
+                    }
+
+                    const adUser = await app.locals.authenticateAD(username, password, adConfig);
+                    if (adUser) isValid = true;
+                } else {
+                    console.error('[AUTH] Module AD non chargé');
+                }
+            } else {
+                isValid = user.password && await bcrypt.compare(password, user.password);
+            }
+
+            if (isValid) {
+                // Populate roles permissions
+                let permissions = [];
+                if (user.role === 'admin') {
+                    // Les admins ont accès à tout, on laissera le frontend gérer, mais mettons ["*"]
+                    permissions = ["*"];
+                } else {
+                    const roleObj = await db.get('SELECT permissions FROM roles WHERE name = ?', [user.role]);
+                    if (roleObj && roleObj.permissions) {
+                        try { permissions = JSON.parse(roleObj.permissions); } catch(e) {}
+                    }
+                }
+
+                const token = jwt.sign({ 
+                    id: user.id, 
+                    username: user.username, 
+                    role: user.role,
+                    permissions,
+                    is_ad: user.is_ad
+                }, SECRET_KEY);
+                
+                res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, is_ad: user.is_ad } });
             } else {
                 res.status(401).json({ message: 'Identifiants invalides' });
             }
         } catch (error) {
+            console.error('[AUTH ERROR]', error);
             res.status(500).json({ message: error.message });
         }
     });
