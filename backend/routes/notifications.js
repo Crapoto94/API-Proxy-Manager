@@ -22,9 +22,17 @@ module.exports = function(app, db, authenticateAdmin) {
             throw error;
         }
 
-        const senderEmail = options.fromEmail || s.sender_email;
-        const senderName = options.fromName || s.sender_name || 'APM';
-        const useTemplate = options.useTemplate !== undefined ? options.useTemplate : true;
+        // Helper pour ignorer les valeurs par défaut de Swagger ("string") ou vides
+        const clean = (val) => (val === 'string' || val === '' || val === null || val === undefined) ? null : val;
+
+        const senderEmail = clean(options.fromEmail) || s.sender_email;
+        const senderName = clean(options.fromName) || s.sender_name || 'APM';
+        
+        // Détection plus souple de is_raw (booléen ou chaîne "true")
+        const isRaw = options.useTemplate === false || options.is_raw === true || options.is_raw === 'true';
+        const useTemplate = !isRaw;
+
+        console.log(`[MAIL SYSTEM] Préparation du mail pour ${to} (Template: ${useTemplate ? 'OUI' : 'NON'})`);
 
         if (!senderEmail) {
             throw new Error("L'adresse email de l'expéditeur n'est pas configurée");
@@ -36,13 +44,13 @@ module.exports = function(app, db, authenticateAdmin) {
         if (useTemplate) {
             let htmlTemplate = (s.template_html || '{{content}}');
             
-            // Substitue les variables de pied de page
-            const footer1 = options.footer1 || s.footer_line1 || '';
-            const footer2 = options.footer2 || s.footer_line2 || '';
-            const footer3 = options.footer3 || s.footer_line3 || '';
-            const footerColor = options.footerColor || s.footer_color || '#004a99';
+            // Substitue les variables de pied de page (en ignorant les valeurs "string")
+            const footer1 = clean(options.footer1) || s.footer_line1 || '';
+            const footer2 = clean(options.footer2) || s.footer_line2 || '';
+            const footer3 = clean(options.footer3) || s.footer_line3 || '';
+            const footerColor = clean(options.footerColor) || s.footer_color || '#004a99';
 
-            html = htmlTemplate.replace('{{content}}', content)
+            html = htmlTemplate.split('{{content}}').join(content)
                              .split('{{footer1}}').join(footer1)
                              .split('{{footer2}}').join(footer2)
                              .split('{{footer3}}').join(footer3)

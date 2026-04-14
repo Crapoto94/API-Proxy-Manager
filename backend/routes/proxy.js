@@ -241,6 +241,7 @@ module.exports = (app, db, authenticateAdmin) => {
      *               is_raw:
      *                 type: boolean
      *                 description: "Si true, n'utilise pas le template HTML global"
+     *                 default: false
      *               footer1:
      *                 type: string
      *               footer2:
@@ -279,8 +280,8 @@ module.exports = (app, db, authenticateAdmin) => {
             if (app.locals.sendMail) {
                 await app.locals.sendMail(to, subject, content, {
                     fromName: from_name,
-                    from_email: from_email,
-                    useTemplate: is_raw === true ? false : true,
+                    fromEmail: from_email,
+                    is_raw: is_raw,
                     attachments: attachments,
                     footer1, footer2, footer3, footerColor
                 });
