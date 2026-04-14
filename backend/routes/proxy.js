@@ -22,6 +22,31 @@ module.exports = (app, db, authenticateAdmin) => {
                   .replace(/\0/g, '\\00');
     };
 
+    function flattenLDAPEntry(entry) {
+        if (!entry) return null;
+        try {
+            // Method 1: Standard ldapjs object (getter)
+            const obj = entry.object;
+            if (obj && Object.keys(obj).length > 0) return obj;
+
+            // Method 2: Manual extraction from attributes (most robust fallback)
+            const manualObj = { dn: entry.dn?.toString() || 'unknown' };
+            const attributes = entry.attributes || [];
+            attributes.forEach(attr => {
+                const type = attr.type || attr.description;
+                if (type) {
+                    const vals = attr.values || attr._values || [];
+                    manualObj[type] = vals.length === 1 ? vals[0] : vals;
+                }
+            });
+            
+            return manualObj;
+        } catch (e) {
+            console.error('[AD] Flatten error:', e.message);
+            return { dn: entry.dn?.toString() || 'unknown', error: e.message };
+        }
+    }
+
     const maskSensitiveData = (data) => {
         if (!data) return data;
         try {
@@ -492,15 +517,18 @@ module.exports = (app, db, authenticateAdmin) => {
             
             const safeQ = escapeLDAPSearchFilter(q);
             const opts = {
-                filter: `(|(sAMAccountName=${safeQ}*)(mail=${safeQ}*)(cn=${safeQ}*)(displayName=${safeQ}*))`,
+                filter: `(|(sAMAccountName=*${safeQ}*)(mail=*${safeQ}*)(cn=*${safeQ}*)(displayName=*${safeQ}*)(sn=*${safeQ}*)(givenName=*${safeQ}*))`,
                 scope: 'sub',
-                sizeLimit: 5
+                attributes: ['sAMAccountName', 'displayName', 'mail', 'sn', 'givenName', 'cn'],
+                sizeLimit: 20
             };
             
             client.search(config.base_dn, opts, (err, searchRes) => {
                 if (err) { client.destroy(); return res.status(500).json({ error: err.message }); }
                 const entries = [];
-                searchRes.on('searchEntry', (entry) => entries.push(entry.object));
+                searchRes.on('searchEntry', (entry) => {
+                    entries.push(flattenLDAPEntry(entry));
+                });
                 searchRes.on('end', () => { client.destroy(); res.json(entries); });
                 searchRes.on('error', (err) => { client.destroy(); res.status(500).json({ error: err.message }); });
             });

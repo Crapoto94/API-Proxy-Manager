@@ -16,15 +16,27 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
     // --- LDAP Helpers ---
     function flattenLDAPEntry(entry) {
         if (!entry) return null;
-        const pojo = entry.pojo;
-        if (!pojo) return entry.object || entry;
-        const obj = { dn: pojo.objectName };
-        if (pojo.attributes && Array.isArray(pojo.attributes)) {
-            pojo.attributes.forEach(attr => {
-                obj[attr.type] = attr.values.length === 1 ? attr.values[0] : attr.values;
+        try {
+            // Method 1: Standard ldapjs object (getter)
+            const obj = entry.object;
+            if (obj && Object.keys(obj).length > 0) return obj;
+
+            // Method 2: Manual extraction from attributes (most robust fallback)
+            const manualObj = { dn: entry.dn?.toString() || 'unknown' };
+            const attributes = entry.attributes || [];
+            attributes.forEach(attr => {
+                const type = attr.type || attr.description;
+                if (type) {
+                    const vals = attr.values || attr._values || [];
+                    manualObj[type] = vals.length === 1 ? vals[0] : vals;
+                }
             });
+            
+            return manualObj;
+        } catch (e) {
+            console.error('[AD] Flatten error:', e.message);
+            return { dn: entry.dn?.toString() || 'unknown', error: e.message };
         }
-        return obj;
     }
 
     async function authenticateAD(username, password, config) {
@@ -293,9 +305,9 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
 
                 const safeQuery = escapeLDAPSearchFilter(q);
                 const searchOptions = {
-                    filter: `(&(objectClass=user)(!(objectClass=computer))(|(sAMAccountName=*${safeQuery}*)(displayName=*${safeQuery}*)(mail=*${safeQuery}*)))`,
+                    filter: `(|(sAMAccountName=*${safeQuery}*)(displayName=*${safeQuery}*)(mail=*${safeQuery}*)(sn=*${safeQuery}*)(givenName=*${safeQuery}*)(cn=*${safeQuery}*))`,
                     scope: 'sub',
-                    attributes: ['sAMAccountName', 'displayName', 'mail'],
+                    attributes: ['sAMAccountName', 'displayName', 'mail', 'sn', 'givenName', 'cn'],
                     sizeLimit: 20
                 };
 
@@ -307,14 +319,7 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
                     }
 
                     searchRes.on('searchEntry', (entry) => {
-                        const pojo = entry.pojo || entry.object;
-                        const obj = {};
-                        if (pojo.attributes) {
-                            pojo.attributes.forEach(attr => {
-                                obj[attr.type] = attr.values.length === 1 ? attr.values[0] : attr.values;
-                            });
-                        }
-                        results.push(obj);
+                        results.push(flattenLDAPEntry(entry));
                     });
 
                     searchRes.on('error', (err) => {
