@@ -13,6 +13,15 @@ module.exports = (app, db, authenticateAdmin) => {
     const proxyRouter = express.Router();
     const adminRouter = express.Router();
 
+    const escapeLDAPSearchFilter = (str) => {
+        if (typeof str !== 'string') return str;
+        return str.replace(/\\/g, '\\5c')
+                  .replace(/\*/g, '\\2a')
+                  .replace(/\(/g, '\\28')
+                  .replace(/\)/g, '\\29')
+                  .replace(/\0/g, '\\00');
+    };
+
     // --- Middleware: Global Proxy Logger (External APIs only) ---
     const proxyLogger = async (req, res, next) => {
         const originalJson = res.json;
@@ -180,8 +189,62 @@ module.exports = (app, db, authenticateAdmin) => {
     });
 
 
+    /**
+     * @openapi
+     * /api/v1/mail/send:
+     *   post:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Envoie un email via l'un des fournisseurs configurés (SMTP ou Brevo)
+     *     security:
+     *       - ApiKeyAuth: []
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [to, subject, content]
+     *             properties:
+     *               to:
+     *                 type: string
+     *                 example: "destinataire@example.com"
+     *               subject:
+     *                 type: string
+     *                 example: "Sujet du mail"
+     *               content:
+     *                 type: string
+     *                 example: "Contenu du message (HTML supporté)"
+     *               from_name:
+     *                 type: string
+     *                 description: "Nom de l'expéditeur (optionnel)"
+     *               from_email:
+     *                 type: string
+     *                 description: "Email de l'expéditeur (optionnel)"
+     *               is_raw:
+     *                 type: boolean
+     *                 description: "Si true, n'utilise pas le template HTML global"
+     *               attachments:
+     *                 type: array
+     *                 description: "Pièces jointes (optionnel)"
+     *                 items:
+     *                   type: object
+     *                   properties:
+     *                     filename:
+     *                       type: string
+     *                       example: "document.pdf"
+     *                     content:
+     *                       type: string
+     *                       description: "Contenu du fichier en Base64"
+     *     responses:
+     *       200:
+     *         description: Email envoyé avec succès
+     *       401:
+     *         description: Clé API manquante ou invalide
+     *       500:
+     *         description: Erreur interne lors de l'envoi
+     */
     proxyRouter.post('/mail/send', verifyApiKey, async (req, res) => {
-        const { to, subject, content, from_name, from_email, is_raw } = req.body;
+        const { to, subject, content, from_name, from_email, is_raw, attachments } = req.body;
         if (!to || !subject || !content) {
             return res.status(400).json({ error: 'to, subject and content are required' });
         }
@@ -191,14 +254,16 @@ module.exports = (app, db, authenticateAdmin) => {
                 await app.locals.sendMail(to, subject, content, {
                     fromName: from_name,
                     fromEmail: from_email,
-                    useTemplate: is_raw === true ? false : true
+                    useTemplate: is_raw === true ? false : true,
+                    attachments: attachments
                 });
-                console.log(`[PROXY MAIL] Sent for ${req.externalApp.name}: ${to}`);
+                console.log(`[PROXY MAIL] Sent for ${req.externalApp.name}: ${to} (Attachments: ${attachments?.length || 0})`);
                 res.json({ status: 'success' });
             } else {
                 throw new Error('Mail provider not available');
             }
         } catch (error) {
+            console.error('[PROXY MAIL] Error:', error.message);
             res.status(500).json({ error: error.message });
         }
     });
@@ -397,8 +462,9 @@ module.exports = (app, db, authenticateAdmin) => {
         client.bind(config.bind_dn, config.bind_password, (err) => {
             if (err) { client.destroy(); return res.status(500).json({ error: err.message }); }
             
+            const safeQ = escapeLDAPSearchFilter(q);
             const opts = {
-                filter: `(|(sAMAccountName=${q}*)(mail=${q}*)(cn=${q}*)(displayName=${q}*))`,
+                filter: `(|(sAMAccountName=${safeQ}*)(mail=${safeQ}*)(cn=${safeQ}*)(displayName=${safeQ}*))`,
                 scope: 'sub',
                 sizeLimit: 5
             };
@@ -448,13 +514,17 @@ module.exports = (app, db, authenticateAdmin) => {
         client.bind(config.bind_dn, config.bind_password, (err) => {
             if (err) { client.destroy(); return res.status(500).json({ error: 'LDAP Bind Error: ' + err.message }); }
             
-            let filter = `(|(sAMAccountName=*${identifier}*)(mail=*${identifier}*)(userPrincipalName=*${identifier}*)(cn=*${identifier}*))`;
+            const safeId = escapeLDAPSearchFilter(identifier);
+            let filter = `(|(sAMAccountName=*${safeId}*)(mail=*${safeId}*)(userPrincipalName=*${safeId}*)(cn=*${safeId}*))`;
 
             // Support multi-term search (e.g. CHEVALIER+MARC or CHEVALIER&MARC)
             if (identifier.includes('+') || identifier.includes('&') || identifier.includes(' ')) {
                 const parts = identifier.split(/[+& ]+/).filter(p => p.trim().length > 0);
                 if (parts.length >= 2) {
-                    const subFilters = parts.map(p => `(|(sn=*${p}*)(givenName=*${p}*)(cn=*${p}*))`);
+                    const subFilters = parts.map(p => {
+                        const safeP = escapeLDAPSearchFilter(p);
+                        return `(|(sn=*${safeP}*)(givenName=*${safeP}*)(cn=*${safeP}*))`;
+                    });
                     filter = `(|${filter}(&${subFilters.join('')}))`;
                 }
             }
@@ -464,6 +534,8 @@ module.exports = (app, db, authenticateAdmin) => {
                 scope: 'sub',
                 attributes: ['*'] 
             };
+            
+            console.log(`[PROXY AD] Search filter: ${filter}`);
             
             client.search(config.base_dn, opts, (err, searchRes) => {
                 if (err) { client.destroy(); return res.status(500).json({ error: 'LDAP Search Error: ' + err.message }); }
@@ -528,16 +600,61 @@ module.exports = (app, db, authenticateAdmin) => {
         client.bind(config.bind_dn, config.bind_password, (err) => {
             if (err) { client.destroy(); return res.status(500).json({ error: err.message }); }
             
-            client.search(config.base_dn, { filter: `(sAMAccountName=${username})`, scope: 'sub' }, (err, searchRes) => {
+            const safeUser = escapeLDAPSearchFilter(username);
+            console.log(`[PROXY AD] Authenticating user: ${username}`);
+            
+            let responseSent = false;
+
+            client.search(config.base_dn, { filter: `(sAMAccountName=${safeUser})`, scope: 'sub' }, (err, searchRes) => {
+                if (err) {
+                    console.error(`[PROXY AD] Search initiation error for ${username}:`, err.message);
+                    client.destroy();
+                    if (!responseSent) {
+                        responseSent = true;
+                        res.status(500).json({ error: 'LDAP search initiation error' });
+                    }
+                    return;
+                }
+
                 let userDn = null;
-                searchRes.on('searchEntry', (entry) => { userDn = entry.objectName; });
+                searchRes.on('searchEntry', (entry) => { 
+                    userDn = entry.pojo ? entry.pojo.objectName : (entry.objectName || entry.dn); 
+                });
+
                 searchRes.on('end', () => {
-                    if (!userDn) { client.destroy(); return res.status(401).json({ error: 'User not found' }); }
-                    client.bind(userDn, password, (err) => {
+                    if (!userDn) { 
+                        console.warn(`[PROXY AD] User not found: ${username}`);
+                        client.destroy(); 
+                        if (!responseSent) {
+                            responseSent = true;
+                            res.status(401).json({ error: 'User not found' }); 
+                        }
+                        return;
+                    }
+                    
+                    console.log(`[PROXY AD] Binding user DN: ${userDn}`);
+                    // Force String to avoid "stringToWrite must be a string" error
+                    client.bind(String(userDn), String(password || ''), (bindErr) => {
                         client.destroy();
-                        if (err) return res.status(401).json({ error: 'Invalid credentials' });
-                        res.json({ success: true, dn: userDn });
+                        if (!responseSent) {
+                            responseSent = true;
+                            if (bindErr) {
+                                console.error(`[PROXY AD] Bind failed for ${username}:`, bindErr.message);
+                                return res.status(401).json({ error: 'Invalid credentials' });
+                            }
+                            console.log(`[PROXY AD] Auth successful: ${username}`);
+                            res.json({ success: true, dn: userDn });
+                        }
                     });
+                });
+
+                searchRes.on('error', (searchErr) => {
+                    console.error(`[PROXY AD] Search execution error for ${username}:`, searchErr.message);
+                    client.destroy();
+                    if (!responseSent) {
+                        responseSent = true;
+                        res.status(500).json({ error: 'LDAP search execution error' });
+                    }
                 });
             });
         });

@@ -9,7 +9,10 @@ module.exports = function(app, db, authenticateAdmin) {
     // --- Helper sendMail (Module scope) ---
     async function sendMail(to, subject, content, options = {}) {
         const s = await db.get('SELECT * FROM mail_settings WHERE id = 1');
-        if (!s) throw new Error("Paramètres mail non configurés");
+        if (!s) {
+            console.error('[MAIL SYSTEM] Aucun paramètre trouvé en base (id=1)');
+            throw new Error("Paramètres mail non configurés");
+        }
 
         if (s.global_enable === 0 || s.global_enable === false) {
             console.log(`[MAIL SYSTEM] Envoi global désactivé. Mail ignoré pour: ${to}`);
@@ -63,6 +66,19 @@ module.exports = function(app, db, authenticateAdmin) {
             imgCounter++;
         }
 
+        // Add custom attachments from options
+        if (options.attachments && Array.isArray(options.attachments)) {
+            options.attachments.forEach(att => {
+                if (att.filename && att.content) {
+                    attachments.push({
+                        filename: att.filename,
+                        content: att.content,
+                        cid: att.cid // optional
+                    });
+                }
+            });
+        }
+
         if (s.use_api === 1 || s.use_api === true) {
             const apiKey = (s.api_key || '').trim();
             if (!apiKey) throw new Error("Clé API Brevo manquante");
@@ -91,11 +107,18 @@ module.exports = function(app, db, authenticateAdmin) {
                 config.proxy = { host: s.proxy_host, port: parseInt(s.proxy_port || 80) };
             }
 
-            await axios.post(apiUrl, payload, config);
+            try {
+                console.log(`[MAIL SYSTEM] Envoi via API Brevo à: ${to}`);
+                await axios.post(apiUrl, payload, config);
+            } catch (apiError) {
+                console.error('[MAIL SYSTEM] API Error:', apiError.response?.data || apiError.message);
+                throw apiError;
+            }
         } else {
             // SMTP
             if (!s.smtp_host) throw new Error("Hôte SMTP non configuré");
 
+            console.log(`[MAIL SYSTEM] Tentative SMTP: ${s.smtp_host}:${s.smtp_port} (User: ${s.smtp_user})`);
             const transporter = nodemailer.createTransport({
                 host: s.smtp_host,
                 port: s.smtp_port,
@@ -104,18 +127,23 @@ module.exports = function(app, db, authenticateAdmin) {
                 tls: { rejectUnauthorized: false }
             });
 
-            await transporter.sendMail({
-                from: `"${senderName}" <${senderEmail}>`,
-                to,
-                subject,
-                html,
-                attachments: attachments.map(a => ({
-                    filename: a.filename,
-                    content: Buffer.from(a.content, 'base64'),
-                    cid: a.cid
-                }))
-            });
-            console.log(`[MAIL SYSTEM] SMTP Mail envoyé avec succès à: ${to}`);
+            try {
+                await transporter.sendMail({
+                    from: `"${senderName}" <${senderEmail}>`,
+                    to,
+                    subject,
+                    html,
+                    attachments: attachments.map(a => ({
+                        filename: a.filename,
+                        content: Buffer.from(a.content, 'base64'),
+                        cid: a.cid
+                    }))
+                });
+                console.log(`[MAIL SYSTEM] SMTP Mail envoyé avec succès à: ${to}`);
+            } catch (smtpError) {
+                console.error('[MAIL SYSTEM] SMTP Error:', smtpError);
+                throw smtpError;
+            }
         }
     }
 
@@ -201,10 +229,14 @@ module.exports = function(app, db, authenticateAdmin) {
      */
     app.post('/api/send-test-mail', authenticateAdmin, async (req, res) => {
         const { to } = req.body;
+        console.log(`[MAIL SYSTEM] Test mail request to: ${to}`);
         try {
-            await sendMail(to, "Test d'envoi APM", "<p>Ceci est un mail de test envoyé depuis l'<strong>API Proxy Manager</strong>.</p>");
+            await sendMail(to, "Test d'envoi APM", "<p>Ceci est un mail de test envoyé depuis l'<strong>API Proxy Manager</strong>.</p>", {
+                // Posibilité de tester une PJ ici si besoin
+            });
             res.json({ message: 'Mail de test envoyé avec succès' });
         } catch (error) {
+            console.error('[MAIL SYSTEM] Route error:', error);
             res.status(500).json({ message: error.message });
         }
     });

@@ -4,6 +4,15 @@ const jwt = require('jsonwebtoken');
 
 module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
 
+    const escapeLDAPSearchFilter = (str) => {
+        if (typeof str !== 'string') return str;
+        return str.replace(/\\/g, '\\5c')
+                  .replace(/\*/g, '\\2a')
+                  .replace(/\(/g, '\\28')
+                  .replace(/\)/g, '\\29')
+                  .replace(/\0/g, '\\00');
+    };
+
     // --- LDAP Helpers ---
     function flattenLDAPEntry(entry) {
         if (!entry) return null;
@@ -37,8 +46,9 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
                     client.destroy();
                     return reject(new Error('Erreur de liaison AD : ' + err.message));
                 }
+                const safeUser = escapeLDAPSearchFilter(username);
                 const searchOptions = {
-                    filter: `(sAMAccountName=${username})`,
+                    filter: `(sAMAccountName=${safeUser})`,
                     scope: 'sub',
                     attributes: ['dn', 'cn', 'memberOf', 'mail', 'displayName']
                 };
@@ -51,11 +61,17 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
                     res.on('searchEntry', (entry) => { userEntry = flattenLDAPEntry(entry); });
                     res.on('error', (err) => { client.destroy(); reject(err); });
                     res.on('end', () => {
-                        if (!userEntry) { client.destroy(); return resolve(null); }
-                        client.bind(userEntry.dn, password, (err) => {
+                        console.log(`[AD Auth] Binding user DN: ${userEntry.dn}`);
+                        // Force String conversion to prevent ldapjs 'stringToWrite must be a string' error
+                        client.bind(String(userEntry.dn), String(password || ''), (err) => {
                             client.destroy();
-                            if (err) resolve(null);
-                            else resolve(userEntry);
+                            if (err) {
+                                console.error(`[AD Auth] Bind failed for ${username}:`, err.message);
+                                resolve(null);
+                            } else {
+                                console.log(`[AD Auth] Auth successful for ${username}`);
+                                resolve(userEntry);
+                            }
                         });
                     });
                 });
@@ -170,8 +186,9 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
                     return res.status(400).json({ message: 'Échec de l\'authentification du compte de service : ' + err.message });
                 }
                 
+                const safeUser = escapeLDAPSearchFilter(username);
                 const searchOptions = {
-                    filter: `(|(sAMAccountName=${username})(mail=${username})(cn=${username})(userPrincipalName=${username}))`,
+                    filter: `(|(sAMAccountName=${safeUser})(mail=${safeUser})(cn=${safeUser})(userPrincipalName=${safeUser}))`,
                     scope: 'sub',
                     attributes: ['dn', 'cn', 'memberOf', 'mail', 'displayName', 'userPrincipalName']
                 };
