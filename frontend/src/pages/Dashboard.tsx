@@ -9,8 +9,11 @@ import {
   ShieldCheck,
   Mail,
   Smartphone,
-  Loader2
+  Loader2,
+  ExternalLink,
+  LayoutGrid
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { API_BASE_URL } from '../config';
 
 const API_BASE = `${API_BASE_URL}/api`;
@@ -25,10 +28,10 @@ const Dashboard: React.FC = () => {
         try {
             const [statsRes, logsRes] = await Promise.all([
                 axios.get(`${API_BASE}/dashboard/stats`),
-                axios.get(`${API_BASE}/admin/external/logs`)
+                axios.get(`${API_BASE}/admin/external/logs?limit=10`) // Only get last 10 for dashboard
             ]);
             setStats(statsRes.data);
-            setProxyLogs(logsRes.data);
+            setProxyLogs(logsRes.data.logs || []);
             setLastUpdate(new Date());
         } catch (err) {
             console.error('Erreur lors de la récupération des données:', err);
@@ -129,10 +132,16 @@ const Dashboard: React.FC = () => {
 
                 {/* Flux Proxy Live */}
                 <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden flex flex-col">
-                    <div className="px-8 py-6 border-b border-slate-50 bg-slate-50/50">
+                    <div className="px-8 py-6 border-b border-slate-50 bg-slate-50/50 flex items-center justify-between">
                         <h3 className="text-lg font-black text-slate-900 flex items-center gap-3">
                             <Activity className="text-blue-600" size={24} /> Flux Proxy Live
                         </h3>
+                        <Link 
+                            to="/logs" 
+                            className="text-[10px] font-black text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1.5 rounded-lg transition-all flex items-center gap-1 uppercase tracking-tight"
+                        >
+                            Voir tout <ExternalLink size={12} />
+                        </Link>
                     </div>
                     <div className="p-8 flex-1 overflow-y-auto max-h-[400px]">
                         <div className="space-y-6">
@@ -153,8 +162,8 @@ const Dashboard: React.FC = () => {
                                             <span className="text-[10px] text-slate-300">•</span>
                                             <span className="text-[10px] font-bold text-blue-600 truncate">{log.app_name}</span>
                                         </div>
-                                        <p className="text-[10px] text-slate-400 font-bold mt-2 uppercase flex items-center gap-1">
-                                            <Clock size={10} /> {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                        <p className="text-[10px] text-slate-400 font-bold mt-2 uppercase flex items-center gap-1 italic">
+                                            <Clock size={10} /> {new Date(log.timestamp).toLocaleDateString([], { day: '2-digit', month: '2-digit' })} • {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                         </p>
                                     </div>
                                 </div>
@@ -194,5 +203,3 @@ const Dashboard: React.FC = () => {
 };
 
 export default Dashboard;
-
-import { LayoutGrid } from 'lucide-react';

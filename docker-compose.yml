@@ -1,20 +1,6 @@
 version: '3.8'
 
 services:
-  portainer:
-    image: portainer/portainer-ce:latest
-    container_name: apm-portainer
-    restart: always
-    security_opt:
-      - no-new-privileges:true
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - portainer_data:/data
-    ports:
-      - "9000:9000"
-      - "9443:9443"
-
   backend:
     build: 
       context: ./backend
@@ -39,5 +25,3 @@ services:
     depends_on:
       - backend
 
-volumes:
-  portainer_data:

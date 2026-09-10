@@ -11,10 +11,11 @@ import {
   Users,
   Globe,
   LogOut,
-  Bell,
-  Menu,
   Mail,
-  X
+  X,
+  ScrollText,
+  Bell,
+  Menu
 } from 'lucide-react';
 import { API_BASE_URL, setApiBaseUrl } from './config';
 
@@ -43,6 +44,15 @@ const Layout = ({ children, onLogout, user }: { children: React.ReactNode, onLog
   const [isEditingApi, setIsEditingApi] = useState(false);
   const [newApiUrl, setNewApiUrl] = useState(API_BASE_URL);
 
+  const hasPermission = (route: string) => {
+    if (!user) return false;
+    if (user.role === 'admin') return true;
+    if (user.permissions && Array.isArray(user.permissions)) {
+       return user.permissions.includes(route) || user.permissions.includes('*');
+    }
+    return false;
+  };
+
   return (
     <div className="h-screen bg-slate-100 flex overflow-hidden">
       {/* Sidebar */}
@@ -53,17 +63,18 @@ const Layout = ({ children, onLogout, user }: { children: React.ReactNode, onLog
         </div>
 
         <nav className="flex-1 overflow-y-auto p-3 space-y-1">
-          <SidebarLink to="/" icon={LayoutDashboard}>Dashboard</SidebarLink>
-          <SidebarLink to="/mail-settings" icon={Settings}>Mails SMTP</SidebarLink>
-          <SidebarLink to="/frizbi-settings" icon={MessageSquare}>SMS Frizbi</SidebarLink>
-          <SidebarLink to="/directory" icon={ShieldCheck}>Annuaire AD</SidebarLink>
-          <SidebarLink to="/o365" icon={Mail}>Messagerie O365</SidebarLink>
-          <SidebarLink to="/database" icon={Database}>Oracle & Sync</SidebarLink>
-          <SidebarLink to="/sql" icon={Search}>SQL Explorer</SidebarLink>
-          <SidebarLink to="/users" icon={Users}>Utilisateurs</SidebarLink>
-          <SidebarLink to="/apps" icon={Globe}>Applications</SidebarLink>
-          <SidebarLink to="/security" icon={ShieldCheck}>Sécurité & Proxies</SidebarLink>
-          <SidebarLink to="/api-docs" icon={Database}>Documentation API</SidebarLink>
+          {hasPermission('/') && <SidebarLink to="/" icon={LayoutDashboard}>Dashboard</SidebarLink>}
+          {hasPermission('/mail-settings') && <SidebarLink to="/mail-settings" icon={Settings}>Mails SMTP</SidebarLink>}
+          {hasPermission('/frizbi-settings') && <SidebarLink to="/frizbi-settings" icon={MessageSquare}>SMS Frizbi</SidebarLink>}
+          {hasPermission('/logs') && <SidebarLink to="/logs" icon={ScrollText}>Logs Proxy</SidebarLink>}
+          {hasPermission('/directory') && <SidebarLink to="/directory" icon={ShieldCheck}>Annuaire AD</SidebarLink>}
+          {hasPermission('/o365') && <SidebarLink to="/o365" icon={Mail}>Messagerie O365</SidebarLink>}
+          {hasPermission('/database') && <SidebarLink to="/database" icon={Database}>Oracle & Sync</SidebarLink>}
+          {hasPermission('/sql') && <SidebarLink to="/sql" icon={Search}>SQL Explorer</SidebarLink>}
+          {hasPermission('/users') && <SidebarLink to="/users" icon={Users}>Utilisateurs</SidebarLink>}
+          {hasPermission('/apps') && <SidebarLink to="/apps" icon={Globe}>Applications</SidebarLink>}
+          {hasPermission('/security') && <SidebarLink to="/security" icon={ShieldCheck}>Sécurité & Proxies</SidebarLink>}
+          {hasPermission('/api-docs') && <SidebarLink to="/api-docs" icon={Database}>Documentation API</SidebarLink>}
         </nav>
 
         <div className="p-5 border-t border-white/5 space-y-4">
@@ -176,6 +187,7 @@ import UserSettings from './pages/UserSettings';
 import AppManagement from './pages/AppManagement';
 import SecuritySettings from './pages/SecuritySettings';
 import O365Settings from './pages/O365Settings';
+import ProxyLogs from './pages/ProxyLogs';
 import Login from './pages/Login';
 
 const App = () => {
@@ -216,6 +228,7 @@ const App = () => {
           <Route path="/" element={<Dashboard />} />
           <Route path="/mail-settings" element={<MailSettings />} />
           <Route path="/frizbi-settings" element={<FrizbiSettings />} />
+          <Route path="/logs" element={<ProxyLogs />} />
           <Route path="/directory" element={<DirectorySettings />} />
           <Route path="/database" element={<OracleSettings />} />
           <Route path="/sql" element={<AdminSQL />} />

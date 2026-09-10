@@ -1,25 +1,32 @@
 /**
- * Helpers LDAP partagés (échappement de filtre, recherche insensible aux accents,
- * décodage des chaînes retournées par le LDAP).
+ * Helpers LDAP partagés : recherche insensible aux accents et décodage des
+ * chaînes renvoyées par le LDAP.
  *
- * Contexte : la recherche/vérification d'un agent AD échouait pour les noms/prénoms
- * accentués (ex. « Valérie Fourbe ») — l'octet exact envoyé dans le filtre LDAP pour
- * un caractère accentué ne correspond pas toujours à celui stocké côté AD, et les
- * valeurs renvoyées par ldapjs peuvent arriver \XX-échappées. Même correction que
- * celle appliquée dans C:\dev\appdsi\backend\shared\{ad_helper,utils}.js : on
- * échappe le filtre, on ajoute une variante « floue » (accents remplacés par « * »)
- * en repli, et on décode/normalise (NFC) les attributs texte des résultats.
+ * Contexte : la recherche/vérification d'un agent AD échouait pour les
+ * noms/prénoms accentués (ex. « Valérie Fourbe ») — l'octet exact envoyé
+ * dans le filtre LDAP pour un caractère accentué ne correspond pas toujours
+ * à celui stocké côté AD, et les valeurs renvoyées par ldapjs peuvent
+ * arriver \XX-échappées. Même correction que celle appliquée dans
+ * C:\dev\appdsi\backend\shared\{ad_helper,utils}.js : on ajoute une variante
+ * « floue » du filtre (accents remplacés par « * ») en repli, et on
+ * décode/normalise (NFC) les attributs texte des résultats.
  */
 
-/** Échappe les caractères spéciaux d'un filtre LDAP (RFC 4515). */
+/** Échappe les caractères spéciaux d'un filtre LDAP (RFC 4515, forme hexadécimale). */
 function escapeLDAPFilter(value) {
-    return String(value).replace(/[*()\\\x00]/g, '\\$&');
+    return String(value)
+        .replace(/\\/g, '\\5c')
+        .replace(/\*/g, '\\2a')
+        .replace(/\(/g, '\\28')
+        .replace(/\)/g, '\\29')
+        .replace(/\0/g, '\\00');
 }
 
 /**
  * Variante « floue » d'une valeur de recherche : les marques diacritiques
- * (accents) sont remplacées par un joker « * », déjà échappée pour un filtre LDAP.
- * Ex. « Valérie » → « Vale*rie » (le é se décompose en e + combining acute).
+ * (accents) sont remplacées par un joker « * », déjà échappée pour un filtre
+ * LDAP. Ex. « Valérie » → « Vale*rie » (le é se décompose en « e » + accent
+ * combinant, remplacé par le joker).
  */
 function fuzzyAccentLDAPValue(value) {
     const fuzzy = String(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '*');
@@ -56,49 +63,21 @@ function decodeLDAPString(str) {
 
 const DECODE_ATTRS = ['cn', 'displayName', 'name', 'memberOf', 'mail', 'title', 'department', 'sAMAccountName', 'givenName', 'sn', 'company', 'userPrincipalName'];
 
-/** Aplati une entrée LDAP (ldapjs 3.x) en objet simple, en décodant les attributs texte usuels. */
-function flattenLDAPEntry(entry) {
-    if (!entry) return null;
-    const pojo = entry.pojo;
-    if (!pojo) return entry.object || entry;
-
-    let rawDn = pojo.objectName || '';
-    try {
-        if (rawDn && typeof rawDn === 'string' && rawDn.includes('\\')) rawDn = decodeLDAPString(rawDn);
-    } catch (e) { /* ignore */ }
-
-    const obj = { dn: rawDn };
-    if (pojo.attributes && Array.isArray(pojo.attributes)) {
-        pojo.attributes.forEach((attr) => {
-            let val = attr.values.length === 1 ? attr.values[0] : attr.values;
-            if (DECODE_ATTRS.includes(attr.type)) {
-                val = Array.isArray(val) ? val.map((v) => decodeLDAPString(v)) : decodeLDAPString(val);
-            }
-            obj[attr.type] = val;
-        });
-    }
+/** Décode/normalise en place les attributs texte usuels d'une entrée LDAP déjà aplatie en objet simple. */
+function decodeEntryAttrs(obj) {
+    if (!obj) return obj;
+    DECODE_ATTRS.forEach((attr) => {
+        if (obj[attr] === undefined || obj[attr] === null) return;
+        obj[attr] = Array.isArray(obj[attr])
+            ? obj[attr].map((v) => decodeLDAPString(v))
+            : decodeLDAPString(obj[attr]);
+    });
     return obj;
-}
-
-/**
- * Filtre LDAP « OR » combinant, pour chaque attribut donné, un match partiel sur
- * la valeur brute ET sur sa variante floue (accents → « * »), pour retrouver les
- * agents accentués quelle que soit la façon dont l'accent est stocké côté AD.
- */
-function buildAccentInsensitiveOrFilter(attributes, rawValue) {
-    const escaped = escapeLDAPFilter(rawValue);
-    const fuzzy = fuzzyAccentLDAPValue(rawValue);
-    const clauses = attributes.map((attr) => `(${attr}=*${escaped}*)`);
-    if (fuzzy !== escaped) {
-        attributes.forEach((attr) => clauses.push(`(${attr}=*${fuzzy}*)`));
-    }
-    return `(|${clauses.join('')})`;
 }
 
 module.exports = {
     escapeLDAPFilter,
     fuzzyAccentLDAPValue,
     decodeLDAPString,
-    flattenLDAPEntry,
-    buildAccentInsensitiveOrFilter
+    decodeEntryAttrs
 };

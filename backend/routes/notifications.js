@@ -9,16 +9,30 @@ module.exports = function(app, db, authenticateAdmin) {
     // --- Helper sendMail (Module scope) ---
     async function sendMail(to, subject, content, options = {}) {
         const s = await db.get('SELECT * FROM mail_settings WHERE id = 1');
-        if (!s) throw new Error("Paramètres mail non configurés");
+        if (!s) {
+            console.error('[MAIL SYSTEM] Aucun paramètre trouvé en base (id=1)');
+            throw new Error("Paramètres mail non configurés");
+        }
 
         if (s.global_enable === 0 || s.global_enable === false) {
             console.log(`[MAIL SYSTEM] Envoi global désactivé. Mail ignoré pour: ${to}`);
-            throw new Error('L\'envoi global de mails est désactivé dans les paramètres.');
+            // Return null or handle gracefully instead of throwing if we want to avoid 500
+            const error = new Error('L\'envoi global de mails est désactivé dans les paramètres.');
+            error.status = 400;
+            throw error;
         }
 
-        const senderEmail = options.fromEmail || s.sender_email;
-        const senderName = options.fromName || s.sender_name || 'APM';
-        const useTemplate = options.useTemplate !== undefined ? options.useTemplate : true;
+        // Helper pour ignorer les valeurs par défaut de Swagger ("string") ou vides
+        const clean = (val) => (val === 'string' || val === '' || val === null || val === undefined) ? null : val;
+
+        const senderEmail = clean(options.fromEmail) || s.sender_email;
+        const senderName = clean(options.fromName) || s.sender_name || 'APM';
+        
+        // Détection plus souple de is_raw (booléen ou chaîne "true")
+        const isRaw = options.useTemplate === false || options.is_raw === true || options.is_raw === 'true';
+        const useTemplate = !isRaw;
+
+        console.log(`[MAIL SYSTEM] Préparation du mail pour ${to} (Template: ${useTemplate ? 'OUI' : 'NON'})`);
 
         if (!senderEmail) {
             throw new Error("L'adresse email de l'expéditeur n'est pas configurée");
@@ -29,15 +43,32 @@ module.exports = function(app, db, authenticateAdmin) {
 
         if (useTemplate) {
             let htmlTemplate = (s.template_html || '{{content}}');
-            html = htmlTemplate.replace('{{content}}', content);
+            
+            // Substitue les variables de pied de page (en ignorant les valeurs "string")
+            const footer1 = clean(options.footer1) || s.footer_line1 || '';
+            const footer2 = clean(options.footer2) || s.footer_line2 || '';
+            const footer3 = clean(options.footer3) || s.footer_line3 || '';
+            const footerColor = clean(options.footerColor) || s.footer_color || '#004a99';
 
-            // Logo CID handling
-            const logoPath = path.join(__dirname, '..', 'magapp_img', 'logo_dsi.png');
-            if (html.includes('logo_dsi.png') && fs.existsSync(logoPath)) {
-                const cid = 'logo_dsi';
+            html = htmlTemplate.split('{{content}}').join(content)
+                             .split('{{footer1}}').join(footer1)
+                             .split('{{footer2}}').join(footer2)
+                             .split('{{footer3}}').join(footer3)
+                             .split('{{footerColor}}').join(footerColor);
+
+            // Logo CID handling - Priorité à Ivry.png si mentionné ou si logo_dsi est recherché
+            let logoToUse = 'Ivry.png';
+            if (!fs.existsSync(path.join(__dirname, '..', 'magapp_img', 'Ivry.png'))) {
+                logoToUse = 'logo_dsi.png';
+            }
+
+            const logoPath = path.join(__dirname, '..', 'magapp_img', logoToUse);
+            if ((html.includes('logo_dsi.png') || html.includes('Ivry.png')) && fs.existsSync(logoPath)) {
+                const cid = 'logo_brand';
                 html = html.split('logo_dsi.png').join(`cid:${cid}`);
+                html = html.split('Ivry.png').join(`cid:${cid}`);
                 attachments.push({
-                    filename: 'logo_dsi.png',
+                    filename: logoToUse,
                     content: fs.readFileSync(logoPath).toString('base64'),
                     cid: cid
                 });
@@ -61,6 +92,19 @@ module.exports = function(app, db, authenticateAdmin) {
                 cid: cid
             });
             imgCounter++;
+        }
+
+        // Add custom attachments from options
+        if (options.attachments && Array.isArray(options.attachments)) {
+            options.attachments.forEach(att => {
+                if (att.filename && att.content) {
+                    attachments.push({
+                        filename: att.filename,
+                        content: att.content,
+                        cid: att.cid // optional
+                    });
+                }
+            });
         }
 
         if (s.use_api === 1 || s.use_api === true) {
@@ -91,11 +135,18 @@ module.exports = function(app, db, authenticateAdmin) {
                 config.proxy = { host: s.proxy_host, port: parseInt(s.proxy_port || 80) };
             }
 
-            await axios.post(apiUrl, payload, config);
+            try {
+                console.log(`[MAIL SYSTEM] Envoi via API Brevo à: ${to}`);
+                await axios.post(apiUrl, payload, config);
+            } catch (apiError) {
+                console.error('[MAIL SYSTEM] API Error:', apiError.response?.data || apiError.message);
+                throw apiError;
+            }
         } else {
             // SMTP
             if (!s.smtp_host) throw new Error("Hôte SMTP non configuré");
 
+            console.log(`[MAIL SYSTEM] Tentative SMTP: ${s.smtp_host}:${s.smtp_port} (User: ${s.smtp_user})`);
             const transporter = nodemailer.createTransport({
                 host: s.smtp_host,
                 port: s.smtp_port,
@@ -104,18 +155,23 @@ module.exports = function(app, db, authenticateAdmin) {
                 tls: { rejectUnauthorized: false }
             });
 
-            await transporter.sendMail({
-                from: `"${senderName}" <${senderEmail}>`,
-                to,
-                subject,
-                html,
-                attachments: attachments.map(a => ({
-                    filename: a.filename,
-                    content: Buffer.from(a.content, 'base64'),
-                    cid: a.cid
-                }))
-            });
-            console.log(`[MAIL SYSTEM] SMTP Mail envoyé avec succès à: ${to}`);
+            try {
+                await transporter.sendMail({
+                    from: `"${senderName}" <${senderEmail}>`,
+                    to,
+                    subject,
+                    html,
+                    attachments: attachments.map(a => ({
+                        filename: a.filename,
+                        content: Buffer.from(a.content, 'base64'),
+                        cid: a.cid
+                    }))
+                });
+                console.log(`[MAIL SYSTEM] SMTP Mail envoyé avec succès à: ${to}`);
+            } catch (smtpError) {
+                console.error('[MAIL SYSTEM] SMTP Error:', smtpError);
+                throw smtpError;
+            }
         }
     }
 
@@ -153,6 +209,11 @@ module.exports = function(app, db, authenticateAdmin) {
      *         application/json:
      *           schema:
      *             type: object
+     *             properties:
+     *               footer_line1: { type: string }
+     *               footer_line2: { type: string }
+     *               footer_line3: { type: string }
+     *               footer_color: { type: string }
      *     responses:
      *       200:
      *         description: Mise à jour réussie
@@ -165,13 +226,15 @@ module.exports = function(app, db, authenticateAdmin) {
                     smtp_host = ?, smtp_port = ?, smtp_user = ?, smtp_pass = ?, 
                     smtp_secure = ?, proxy_host = ?, proxy_port = ?, 
                     sender_email = ?, sender_name = ?, api_key = ?, template_html = ?,
-                    global_enable = ?, use_api = ?, api_url = ?
+                    global_enable = ?, use_api = ?, api_url = ?,
+                    footer_line1 = ?, footer_line2 = ?, footer_line3 = ?, footer_color = ?
                 WHERE id = 1
             `, [
                 s.smtp_host, s.smtp_port, s.smtp_user, s.smtp_pass,
                 s.smtp_secure, s.proxy_host, s.proxy_port,
                 s.sender_email, s.sender_name, s.api_key, s.template_html,
-                s.global_enable ? 1 : 0, s.use_api ? 1 : 0, s.api_url
+                s.global_enable ? 1 : 0, s.use_api ? 1 : 0, s.api_url,
+                s.footer_line1, s.footer_line2, s.footer_line3, s.footer_color
             ]);
             res.json({ message: 'Paramètres mail mis à jour' });
         } catch (error) {
@@ -201,11 +264,15 @@ module.exports = function(app, db, authenticateAdmin) {
      */
     app.post('/api/send-test-mail', authenticateAdmin, async (req, res) => {
         const { to } = req.body;
+        console.log(`[MAIL SYSTEM] Test mail request to: ${to}`);
         try {
-            await sendMail(to, "Test d'envoi APM", "<p>Ceci est un mail de test envoyé depuis l'<strong>API Proxy Manager</strong>.</p>");
+            await sendMail(to, "Test d'envoi APM", "<p>Ceci est un mail de test envoyé depuis l'<strong>API Proxy Manager</strong>.</p>", {
+                // Posibilité de tester une PJ ici si besoin
+            });
             res.json({ message: 'Mail de test envoyé avec succès' });
         } catch (error) {
-            res.status(500).json({ message: error.message });
+            console.error('[MAIL SYSTEM] Route error:', error);
+            res.status(error.status || 500).json({ message: error.message });
         }
     });
 

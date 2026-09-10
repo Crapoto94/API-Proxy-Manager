@@ -1,9 +1,44 @@
 const ldap = require('ldapjs');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
-const { escapeLDAPFilter, fuzzyAccentLDAPValue, flattenLDAPEntry } = require('./ldap_helpers');
+const { fuzzyAccentLDAPValue, decodeEntryAttrs } = require('./ldap_helpers');
 
 module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
+
+    const escapeLDAPSearchFilter = (str) => {
+        if (typeof str !== 'string') return str;
+        return str.replace(/\\/g, '\\5c')
+                  .replace(/\*/g, '\\2a')
+                  .replace(/\(/g, '\\28')
+                  .replace(/\)/g, '\\29')
+                  .replace(/\0/g, '\\00');
+    };
+
+    // --- LDAP Helpers ---
+    function flattenLDAPEntry(entry) {
+        if (!entry) return null;
+        try {
+            // Method 1: Standard ldapjs object (getter)
+            const obj = entry.object;
+            if (obj && Object.keys(obj).length > 0) return obj;
+
+            // Method 2: Manual extraction from attributes (most robust fallback)
+            const manualObj = { dn: entry.dn?.toString() || 'unknown' };
+            const attributes = entry.attributes || [];
+            attributes.forEach(attr => {
+                const type = attr.type || attr.description;
+                if (type) {
+                    const vals = attr.values || attr._values || [];
+                    manualObj[type] = vals.length === 1 ? vals[0] : vals;
+                }
+            });
+            
+            return manualObj;
+        } catch (e) {
+            console.error('[AD] Flatten error:', e.message);
+            return { dn: entry.dn?.toString() || 'unknown', error: e.message };
+        }
+    }
 
     async function authenticateAD(username, password, config) {
         return new Promise((resolve, reject) => {
@@ -24,8 +59,9 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
                     client.destroy();
                     return reject(new Error('Erreur de liaison AD : ' + err.message));
                 }
+                const safeUser = escapeLDAPSearchFilter(username);
                 const searchOptions = {
-                    filter: `(sAMAccountName=${escapeLDAPFilter(username)})`,
+                    filter: `(sAMAccountName=${safeUser})`,
                     scope: 'sub',
                     attributes: ['dn', 'cn', 'memberOf', 'mail', 'displayName']
                 };
@@ -38,17 +74,26 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
                     res.on('searchEntry', (entry) => { userEntry = flattenLDAPEntry(entry); });
                     res.on('error', (err) => { client.destroy(); reject(err); });
                     res.on('end', () => {
-                        if (!userEntry) { client.destroy(); return resolve(null); }
-                        client.bind(userEntry.dn, password, (err) => {
+                        console.log(`[AD Auth] Binding user DN: ${userEntry.dn}`);
+                        // Force String conversion to prevent ldapjs 'stringToWrite must be a string' error
+                        client.bind(String(userEntry.dn), String(password || ''), (err) => {
                             client.destroy();
-                            if (err) resolve(null);
-                            else resolve(userEntry);
+                            if (err) {
+                                console.error(`[AD Auth] Bind failed for ${username}:`, err.message);
+                                resolve(null);
+                            } else {
+                                console.log(`[AD Auth] Auth successful for ${username}`);
+                                resolve(userEntry);
+                            }
                         });
                     });
                 });
             });
         });
     }
+
+    // Expose for server.js usage
+    app.locals.authenticateAD = authenticateAD;
 
     // --- AD Settings Routes ---
     /**
@@ -158,10 +203,10 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
                 }
                 
                 // Filtre insensible aux accents (ex. « Valérie ») : voir ldap_helpers.js
-                const escapedUser = escapeLDAPFilter(username);
+                const safeUser = escapeLDAPSearchFilter(username);
                 const fuzzyUser = fuzzyAccentLDAPValue(username);
-                let testFilter = `(|(sAMAccountName=${escapedUser})(mail=${escapedUser})(cn=${escapedUser})(userPrincipalName=${escapedUser})(displayName=${escapedUser}))`;
-                if (fuzzyUser !== escapedUser) {
+                let testFilter = `(|(sAMAccountName=${safeUser})(mail=${safeUser})(cn=${safeUser})(userPrincipalName=${safeUser})(displayName=${safeUser}))`;
+                if (fuzzyUser !== safeUser) {
                     testFilter = `(|${testFilter}(cn=${fuzzyUser})(displayName=${fuzzyUser}))`;
                 }
 
@@ -181,8 +226,8 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
                     }
 
                     let userEntry = null;
-                    searchRes.on('searchEntry', (entry) => { 
-                        userEntry = flattenLDAPEntry(entry);
+                    searchRes.on('searchEntry', (entry) => {
+                        userEntry = decodeEntryAttrs(flattenLDAPEntry(entry));
                         console.log('[AD TEST] Entry found:', userEntry?.dn);
                     });
 
@@ -236,6 +281,78 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
     });
 
     // --- Azure AD Settings Routes ---
+    app.get('/api/admin/ad/search', authenticateAdmin, async (req, res) => {
+        const { q } = req.query;
+        if (!q || q.length < 2) return res.json([]);
+
+        try {
+            const config = await db.get('SELECT * FROM ad_settings WHERE id = 1');
+            if (!config || !config.is_enabled) return res.status(400).json({ message: 'Active Directory désactivé' });
+            
+            // Re-fetch bind password
+            if (config.bind_password === '********' || config.bind_password === '••••••••') {
+                const dbConfig = await db.get('SELECT bind_password FROM ad_settings WHERE id = 1');
+                config.bind_password = dbConfig.bind_password;
+            }
+
+            const client = ldap.createClient({
+                url: `ldap://${config.host}:${config.port}`,
+                connectTimeout: 5000,
+                timeout: 5000
+            });
+
+            client.on('error', (err) => {
+                res.status(500).json({ message: 'LDAP Error: ' + err.message });
+            });
+
+            client.bind(config.bind_dn, config.bind_password, (err) => {
+                if (err) {
+                    client.destroy();
+                    return res.status(500).json({ message: 'LDAP Bind Error: ' + err.message });
+                }
+
+                // Filtre insensible aux accents (ex. « Valérie ») : voir ldap_helpers.js
+                const safeQuery = escapeLDAPSearchFilter(q);
+                const fuzzyQuery = fuzzyAccentLDAPValue(q);
+                let searchFilter = `(|(sAMAccountName=*${safeQuery}*)(displayName=*${safeQuery}*)(mail=*${safeQuery}*)(sn=*${safeQuery}*)(givenName=*${safeQuery}*)(cn=*${safeQuery}*))`;
+                if (fuzzyQuery !== safeQuery) {
+                    searchFilter = `(|${searchFilter}(displayName=*${fuzzyQuery}*)(sn=*${fuzzyQuery}*)(givenName=*${fuzzyQuery}*)(cn=*${fuzzyQuery}*))`;
+                }
+
+                const searchOptions = {
+                    filter: searchFilter,
+                    scope: 'sub',
+                    attributes: ['sAMAccountName', 'displayName', 'mail', 'sn', 'givenName', 'cn'],
+                    sizeLimit: 20
+                };
+
+                const results = [];
+                client.search(config.base_dn, searchOptions, (err, searchRes) => {
+                    if (err) {
+                        client.destroy();
+                        return res.status(500).json({ message: 'Search initiation error: ' + err.message });
+                    }
+
+                    searchRes.on('searchEntry', (entry) => {
+                        results.push(decodeEntryAttrs(flattenLDAPEntry(entry)));
+                    });
+
+                    searchRes.on('error', (err) => {
+                        client.destroy();
+                        res.status(500).json({ message: 'Search execution error: ' + err.message });
+                    });
+
+                    searchRes.on('end', () => {
+                        client.destroy();
+                        res.json(results);
+                    });
+                });
+            });
+        } catch (error) {
+            res.status(500).json({ message: 'Erreur recherche AD: ' + error.message });
+        }
+    });
+
     /**
      * @openapi
      * /api/azure-ad-settings/status:

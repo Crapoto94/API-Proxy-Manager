@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
+const { fuzzyAccentLDAPValue, decodeEntryAttrs } = require('./ldap_helpers');
 
 /**
  * @openapi
@@ -13,6 +14,54 @@ module.exports = (app, db, authenticateAdmin) => {
     const proxyRouter = express.Router();
     const adminRouter = express.Router();
 
+    const escapeLDAPSearchFilter = (str) => {
+        if (typeof str !== 'string') return str;
+        return str.replace(/\\/g, '\\5c')
+                  .replace(/\*/g, '\\2a')
+                  .replace(/\(/g, '\\28')
+                  .replace(/\)/g, '\\29')
+                  .replace(/\0/g, '\\00');
+    };
+
+    function flattenLDAPEntry(entry) {
+        if (!entry) return null;
+        try {
+            // Method 1: Standard ldapjs object (getter)
+            const obj = entry.object;
+            if (obj && Object.keys(obj).length > 0) return obj;
+
+            // Method 2: Manual extraction from attributes (most robust fallback)
+            const manualObj = { dn: entry.dn?.toString() || 'unknown' };
+            const attributes = entry.attributes || [];
+            attributes.forEach(attr => {
+                const type = attr.type || attr.description;
+                if (type) {
+                    const vals = attr.values || attr._values || [];
+                    manualObj[type] = vals.length === 1 ? vals[0] : vals;
+                }
+            });
+            
+            return manualObj;
+        } catch (e) {
+            console.error('[AD] Flatten error:', e.message);
+            return { dn: entry.dn?.toString() || 'unknown', error: e.message };
+        }
+    }
+
+    const maskSensitiveData = (data) => {
+        if (!data) return data;
+        try {
+            let str = typeof data === 'string' ? data : JSON.stringify(data);
+            // Replace common password fields and client secrets globally in JSON or Query strings
+            // Covers "password": "...", "password": 1234, "passward": "...", etc.
+            return str.replace(/"([^"]*(?:password|pass|secret|bind_password|client_secret|token|api_key)[^"]*)"\s*:\s*("[^"]*"|[^,} \]]+)/gi, (match, p1) => {
+                return `"${p1}":"********"`;
+            });
+        } catch(e) {
+            return "Unparseable Data";
+        }
+    };
+
     // --- Middleware: Global Proxy Logger (External APIs only) ---
     const proxyLogger = async (req, res, next) => {
         const originalJson = res.json;
@@ -21,16 +70,20 @@ module.exports = (app, db, authenticateAdmin) => {
             const status = res.statusCode;
             const appEntry = req.externalApp || null;
             
+            const safeBody = maskSensitiveData(req.body || {});
+            const safeResponse = maskSensitiveData(data || {});
+
             // Log for external proxy routes
             db.run(
-                'INSERT INTO proxy_logs (app_id, endpoint, method, query_params, payload, status) VALUES (?, ?, ?, ?, ?, ?)',
+                'INSERT INTO proxy_logs (app_id, endpoint, method, query_params, payload, status, response_payload) VALUES (?, ?, ?, ?, ?, ?, ?)',
                 [
                     appEntry ? appEntry.id : null,
                     req.originalUrl || req.path,
                     req.method,
-                    JSON.stringify(req.query || {}),
-                    JSON.stringify(req.body || {}),
-                    status
+                    maskSensitiveData(req.query || {}),
+                    safeBody,
+                    status,
+                    safeResponse
                 ]
             ).catch(e => console.error('[PROXY LOG ERROR]:', e.message));
 
@@ -180,8 +233,71 @@ module.exports = (app, db, authenticateAdmin) => {
     });
 
 
+    /**
+     * @openapi
+     * /api/v1/mail/send:
+     *   post:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Envoie un email via l'un des fournisseurs configurés (SMTP ou Brevo)
+     *     security:
+     *       - ApiKeyAuth: []
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [to, subject, content]
+     *             properties:
+     *               to:
+     *                 type: string
+     *                 example: "destinataire@example.com"
+     *               subject:
+     *                 type: string
+     *                 example: "Sujet du mail"
+     *               content:
+     *                 type: string
+     *                 example: "Contenu du message (HTML supporté)"
+     *               from_name:
+     *                 type: string
+     *                 description: "Nom de l'expéditeur (optionnel)"
+     *               from_email:
+     *                 type: string
+     *                 description: "Email de l'expéditeur (optionnel)"
+     *               is_raw:
+     *                 type: boolean
+     *                 description: "Si true, n'utilise pas le template HTML global"
+     *                 default: false
+     *               footer1:
+     *                 type: string
+     *               footer2:
+     *                 type: string
+     *               footer3:
+     *                 type: string
+     *               footerColor:
+     *                 type: string
+     *               attachments:
+     *                 type: array
+     *                 description: "Pièces jointes (optionnel)"
+     *                 items:
+     *                   type: object
+     *                   properties:
+     *                     filename:
+     *                       type: string
+     *                       example: "document.pdf"
+     *                     content:
+     *                       type: string
+     *                       description: "Contenu du fichier en Base64"
+     *     responses:
+     *       200:
+     *         description: Email envoyé avec succès
+     *       401:
+     *         description: Clé API manquante ou invalide
+     *       500:
+     *         description: Erreur interne lors de l'envoi
+     */
     proxyRouter.post('/mail/send', verifyApiKey, async (req, res) => {
-        const { to, subject, content, from_name, from_email, is_raw } = req.body;
+        const { to, subject, content, from_name, from_email, is_raw, attachments, footer1, footer2, footer3, footerColor } = req.body;
         if (!to || !subject || !content) {
             return res.status(400).json({ error: 'to, subject and content are required' });
         }
@@ -191,15 +307,18 @@ module.exports = (app, db, authenticateAdmin) => {
                 await app.locals.sendMail(to, subject, content, {
                     fromName: from_name,
                     fromEmail: from_email,
-                    useTemplate: is_raw === true ? false : true
+                    is_raw: is_raw,
+                    attachments: attachments,
+                    footer1, footer2, footer3, footerColor
                 });
-                console.log(`[PROXY MAIL] Sent for ${req.externalApp.name}: ${to}`);
+                console.log(`[PROXY MAIL] Sent for ${req.externalApp.name}: ${to} (Attachments: ${attachments?.length || 0})`);
                 res.json({ status: 'success' });
             } else {
                 throw new Error('Mail provider not available');
             }
         } catch (error) {
-            res.status(500).json({ error: error.message });
+            console.error('[PROXY MAIL] Error:', error.message);
+            res.status(error.status || 500).json({ error: error.message });
         }
     });
 
@@ -390,26 +509,32 @@ module.exports = (app, db, authenticateAdmin) => {
         if (!q) return res.status(400).json({ error: 'Query parameter q is required' });
 
         const ldap = require('ldapjs');
-        const { buildAccentInsensitiveOrFilter, flattenLDAPEntry } = require('./ldap_helpers');
         const config = await db.get('SELECT * FROM ad_settings WHERE id = 1 AND is_enabled = 1');
         if (!config) return res.status(503).json({ error: 'AD service disabled' });
 
         const client = ldap.createClient({ url: `ldap://${config.host}:${config.port}` });
         client.bind(config.bind_dn, config.bind_password, (err) => {
             if (err) { client.destroy(); return res.status(500).json({ error: err.message }); }
-
+            
             // Filtre insensible aux accents (ex. « Valérie ») : voir ldap_helpers.js
+            const safeQ = escapeLDAPSearchFilter(q);
+            const fuzzyQ = fuzzyAccentLDAPValue(q);
+            let searchFilter = `(|(sAMAccountName=*${safeQ}*)(mail=*${safeQ}*)(cn=*${safeQ}*)(displayName=*${safeQ}*)(sn=*${safeQ}*)(givenName=*${safeQ}*))`;
+            if (fuzzyQ !== safeQ) {
+                searchFilter = `(|${searchFilter}(cn=*${fuzzyQ}*)(displayName=*${fuzzyQ}*)(sn=*${fuzzyQ}*)(givenName=*${fuzzyQ}*))`;
+            }
             const opts = {
-                filter: buildAccentInsensitiveOrFilter(['sAMAccountName', 'mail', 'cn', 'displayName'], q),
+                filter: searchFilter,
                 scope: 'sub',
-                sizeLimit: 5
+                attributes: ['sAMAccountName', 'displayName', 'mail', 'sn', 'givenName', 'cn'],
+                sizeLimit: 20
             };
 
             client.search(config.base_dn, opts, (err, searchRes) => {
                 if (err) { client.destroy(); return res.status(500).json({ error: err.message }); }
                 const entries = [];
                 searchRes.on('searchEntry', (entry) => {
-                    entries.push(flattenLDAPEntry(entry));
+                    entries.push(decodeEntryAttrs(flattenLDAPEntry(entry)));
                 });
                 searchRes.on('end', () => { client.destroy(); res.json(entries); });
                 searchRes.on('error', (err) => { client.destroy(); res.status(500).json({ error: err.message }); });
@@ -445,29 +570,28 @@ module.exports = (app, db, authenticateAdmin) => {
         if (!identifier) return res.status(400).json({ error: 'Query parameter identifier is required' });
 
         const ldap = require('ldapjs');
-        const { escapeLDAPFilter, fuzzyAccentLDAPValue, flattenLDAPEntry } = require('./ldap_helpers');
         const config = await db.get('SELECT * FROM ad_settings WHERE id = 1 AND is_enabled = 1');
         if (!config) return res.status(503).json({ error: 'AD service disabled' });
 
         const client = ldap.createClient({ url: `ldap://${config.host}:${config.port}` });
         client.bind(config.bind_dn, config.bind_password, (err) => {
             if (err) { client.destroy(); return res.status(500).json({ error: 'LDAP Bind Error: ' + err.message }); }
-
+            
             // Filtre insensible aux accents (ex. « Valérie ») : voir ldap_helpers.js
-            const escaped = escapeLDAPFilter(identifier);
-            const fuzzy = fuzzyAccentLDAPValue(identifier);
-            let filter = `(|(sAMAccountName=*${escaped}*)(mail=*${escaped}*)(userPrincipalName=*${escaped}*)(cn=*${escaped}*)(displayName=*${escaped}*)`
-                + (fuzzy !== escaped ? `(cn=*${fuzzy}*)(displayName=*${fuzzy}*)` : '') + `)`;
+            const safeId = escapeLDAPSearchFilter(identifier);
+            const fuzzyId = fuzzyAccentLDAPValue(identifier);
+            let filter = `(|(sAMAccountName=*${safeId}*)(mail=*${safeId}*)(userPrincipalName=*${safeId}*)(cn=*${safeId}*)(displayName=*${safeId}*)`
+                + (fuzzyId !== safeId ? `(cn=*${fuzzyId}*)(displayName=*${fuzzyId}*)` : '') + `)`;
 
             // Support multi-term search (e.g. CHEVALIER+MARC or CHEVALIER&MARC)
             if (identifier.includes('+') || identifier.includes('&') || identifier.includes(' ')) {
                 const parts = identifier.split(/[+& ]+/).filter(p => p.trim().length > 0);
                 if (parts.length >= 2) {
                     const subFilters = parts.map(p => {
-                        const pEsc = escapeLDAPFilter(p);
-                        const pFuzzy = fuzzyAccentLDAPValue(p);
-                        return `(|(sn=*${pEsc}*)(givenName=*${pEsc}*)(cn=*${pEsc}*)`
-                            + (pFuzzy !== pEsc ? `(sn=*${pFuzzy}*)(givenName=*${pFuzzy}*)(cn=*${pFuzzy}*)` : '') + `)`;
+                        const safeP = escapeLDAPSearchFilter(p);
+                        const fuzzyP = fuzzyAccentLDAPValue(p);
+                        return `(|(sn=*${safeP}*)(givenName=*${safeP}*)(cn=*${safeP}*)`
+                            + (fuzzyP !== safeP ? `(sn=*${fuzzyP}*)(givenName=*${fuzzyP}*)(cn=*${fuzzyP}*)` : '') + `)`;
                     });
                     filter = `(|${filter}(&${subFilters.join('')}))`;
                 }
@@ -476,15 +600,21 @@ module.exports = (app, db, authenticateAdmin) => {
             const opts = {
                 filter: filter,
                 scope: 'sub',
-                attributes: ['*']
+                attributes: ['*'] 
             };
-
+            
+            console.log(`[PROXY AD] Search filter: ${filter}`);
+            
             client.search(config.base_dn, opts, (err, searchRes) => {
                 if (err) { client.destroy(); return res.status(500).json({ error: 'LDAP Search Error: ' + err.message }); }
-
+                
                 const entries = [];
                 searchRes.on('searchEntry', (entry) => {
-                    entries.push(flattenLDAPEntry(entry));
+                    const obj = { dn: entry.objectName };
+                    entry.attributes.forEach(attr => {
+                        obj[attr.type] = attr.values.length === 1 ? attr.values[0] : attr.values;
+                    });
+                    entries.push(decodeEntryAttrs(obj));
                 });
                 
                 searchRes.on('end', () => {
@@ -531,24 +661,68 @@ module.exports = (app, db, authenticateAdmin) => {
     proxyRouter.post('/ad/authenticate', verifyApiKey, async (req, res) => {
         const { username, password } = req.body;
         const ldap = require('ldapjs');
-        const { escapeLDAPFilter } = require('./ldap_helpers');
         const config = await db.get('SELECT * FROM ad_settings WHERE id = 1 AND is_enabled = 1');
         if (!config) return res.status(503).json({ error: 'AD service disabled' });
 
         const client = ldap.createClient({ url: `ldap://${config.host}:${config.port}` });
         client.bind(config.bind_dn, config.bind_password, (err) => {
             if (err) { client.destroy(); return res.status(500).json({ error: err.message }); }
+            
+            const safeUser = escapeLDAPSearchFilter(username);
+            console.log(`[PROXY AD] Authenticating user: ${username}`);
+            
+            let responseSent = false;
 
-            client.search(config.base_dn, { filter: `(sAMAccountName=${escapeLDAPFilter(username)})`, scope: 'sub' }, (err, searchRes) => {
+            client.search(config.base_dn, { filter: `(sAMAccountName=${safeUser})`, scope: 'sub' }, (err, searchRes) => {
+                if (err) {
+                    console.error(`[PROXY AD] Search initiation error for ${username}:`, err.message);
+                    client.destroy();
+                    if (!responseSent) {
+                        responseSent = true;
+                        res.status(500).json({ error: 'LDAP search initiation error' });
+                    }
+                    return;
+                }
+
                 let userDn = null;
-                searchRes.on('searchEntry', (entry) => { userDn = entry.objectName; });
+                searchRes.on('searchEntry', (entry) => { 
+                    userDn = entry.pojo ? entry.pojo.objectName : (entry.objectName || entry.dn); 
+                });
+
                 searchRes.on('end', () => {
-                    if (!userDn) { client.destroy(); return res.status(401).json({ error: 'User not found' }); }
-                    client.bind(userDn, password, (err) => {
+                    if (!userDn) { 
+                        console.warn(`[PROXY AD] User not found: ${username}`);
+                        client.destroy(); 
+                        if (!responseSent) {
+                            responseSent = true;
+                            res.status(401).json({ error: 'User not found' }); 
+                        }
+                        return;
+                    }
+                    
+                    console.log(`[PROXY AD] Binding user DN: ${userDn}`);
+                    // Force String to avoid "stringToWrite must be a string" error
+                    client.bind(String(userDn), String(password || ''), (bindErr) => {
                         client.destroy();
-                        if (err) return res.status(401).json({ error: 'Invalid credentials' });
-                        res.json({ success: true, dn: userDn });
+                        if (!responseSent) {
+                            responseSent = true;
+                            if (bindErr) {
+                                console.error(`[PROXY AD] Bind failed for ${username}:`, bindErr.message);
+                                return res.status(401).json({ error: 'Invalid credentials' });
+                            }
+                            console.log(`[PROXY AD] Auth successful: ${username}`);
+                            res.json({ success: true, dn: userDn });
+                        }
                     });
+                });
+
+                searchRes.on('error', (searchErr) => {
+                    console.error(`[PROXY AD] Search execution error for ${username}:`, searchErr.message);
+                    client.destroy();
+                    if (!responseSent) {
+                        responseSent = true;
+                        res.status(500).json({ error: 'LDAP search execution error' });
+                    }
                 });
             });
         });
@@ -810,14 +984,52 @@ module.exports = (app, db, authenticateAdmin) => {
     });
 
     adminRouter.get('/logs', authenticateAdmin, async (req, res) => {
-        const logs = await db.all(`
+        const { app_id, status, limit, offset, search, start_date, end_date } = req.query;
+        let query = `
             SELECT pl.*, ea.name as app_name 
             FROM proxy_logs pl
             LEFT JOIN external_apps ea ON pl.app_id = ea.id
-            ORDER BY pl.timestamp DESC 
-            LIMIT 50
-        `);
-        res.json(logs);
+            WHERE 1=1
+        `;
+        const params = [];
+
+        if (app_id && app_id !== 'all') {
+            query += ' AND pl.app_id = ?';
+            params.push(app_id);
+        }
+        if (status === 'error') {
+            query += ' AND pl.status >= 400';
+        } else if (status === 'success') {
+            query += ' AND pl.status < 400';
+        }
+        if (search) {
+            query += ' AND (pl.endpoint LIKE ? OR pl.payload LIKE ? OR pl.response_payload LIKE ? OR ea.name LIKE ?)';
+            params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+        }
+        if (start_date) {
+            query += ' AND datetime(pl.timestamp) >= datetime(?)';
+            params.push(start_date);
+        }
+        if (end_date) {
+            query += ' AND datetime(pl.timestamp) <= datetime(?)';
+            params.push(end_date);
+        }
+
+        try {
+            const count = await db.get(`SELECT COUNT(*) as total FROM (${query})`, params);
+            
+            query += ' ORDER BY pl.timestamp DESC LIMIT ? OFFSET ?';
+            params.push(parseInt(limit) || 50, parseInt(offset) || 0);
+
+            const logs = await db.all(query, params);
+            res.json({ 
+                total: count ? count.total : 0, 
+                logs: logs || [] 
+            });
+        } catch (error) {
+            console.error('[LOGS API] Error:', error.message);
+            res.status(500).json({ error: error.message });
+        }
     });
 
     // --- Security Settings API ---
