@@ -236,7 +236,15 @@ async function startServer() {
     app.post('/api/auth/login', async (req, res) => {
         const { username, password } = req.body;
         try {
-            const user = await db.get('SELECT * FROM users WHERE LOWER(username) = LOWER(?)', [username]);
+            // Comparaison insensible à la casse ET aux accents faite côté JS : le LOWER()
+            // de SQLite ne sait pas mettre en minuscule les lettres accentuées (pas d'ICU
+            // par défaut — LOWER('FOURBÉ') reste 'fourbÉ'), ce qui bloquait en 401 les
+            // agents dont le nom/prénom contient un accent (ex. Valérie Fourbé) dès que la
+            // casse de la lettre accentuée différait entre la saisie et la valeur stockée.
+            const normalize = (s) => String(s || '').trim().toLowerCase().normalize('NFC');
+            const targetUsername = normalize(username);
+            const allUsers = await db.all('SELECT * FROM users');
+            const user = allUsers.find((u) => normalize(u.username) === targetUsername);
             if (!user) {
                 return res.status(401).json({ message: 'Identifiants invalides' });
             }
