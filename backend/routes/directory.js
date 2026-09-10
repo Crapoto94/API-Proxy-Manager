@@ -74,6 +74,15 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
                     res.on('searchEntry', (entry) => { userEntry = flattenLDAPEntry(entry); });
                     res.on('error', (err) => { client.destroy(); reject(err); });
                     res.on('end', () => {
+                        // Régression corrigée (réalignée sur AppDSI, cf. shared/ad_auth.js) : sans ce
+                        // garde, un sAMAccountName non trouvé (ex. mauvais login, ou compte non
+                        // synchronisé) faisait planter l'accès à `userEntry.dn` sur `null` au lieu de
+                        // renvoyer un 401 propre — la Promise ne se résolvait/rejetait jamais.
+                        if (!userEntry) {
+                            console.warn(`[AD Auth] Utilisateur AD introuvable pour sAMAccountName: ${username}`);
+                            client.destroy();
+                            return resolve(null);
+                        }
                         console.log(`[AD Auth] Binding user DN: ${userEntry.dn}`);
                         // Force String conversion to prevent ldapjs 'stringToWrite must be a string' error
                         client.bind(String(userEntry.dn), String(password || ''), (err) => {

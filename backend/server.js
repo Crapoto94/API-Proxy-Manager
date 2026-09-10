@@ -234,68 +234,102 @@ async function startServer() {
      *         description: Identifiants invalides
      */
     app.post('/api/auth/login', async (req, res) => {
-        const { username, password } = req.body;
-        try {
-            // Comparaison insensible à la casse ET aux accents faite côté JS : le LOWER()
-            // de SQLite ne sait pas mettre en minuscule les lettres accentuées (pas d'ICU
-            // par défaut — LOWER('FOURBÉ') reste 'fourbÉ'), ce qui bloquait en 401 les
-            // agents dont le nom/prénom contient un accent (ex. Valérie Fourbé) dès que la
-            // casse de la lettre accentuée différait entre la saisie et la valeur stockée.
-            const normalize = (s) => String(s || '').trim().toLowerCase().normalize('NFC');
-            const targetUsername = normalize(username);
-            const allUsers = await db.all('SELECT * FROM users');
-            const user = allUsers.find((u) => normalize(u.username) === targetUsername);
-            if (!user) {
-                return res.status(401).json({ message: 'Identifiants invalides' });
-            }
+        let { username, password } = req.body;
+        if (!username || !password) {
+            return res.status(400).json({ message: 'Identifiants manquants' });
+        }
+        username = String(username).trim();
+        // Comme AppDSI (server.js) : si l'utilisateur saisit son adresse mail plutôt que
+        // son identifiant AD nu (réflexe naturel), on retire le suffixe avant la recherche
+        // sAMAccountName — sinon la recherche AD ne trouve rien (identifiants pourtant
+        // corrects) et la connexion échoue en 401.
+        username = username.replace(/@ivry94\.fr$/i, '');
 
-            let isValid = false;
-            
-            // Si c'est le compte admin par défaut, force la vérification locale pour ne pas bloquer si AD échoue
-            if (user.is_ad && username !== 'admin') {
-                if (app.locals.authenticateAD) {
-                    const adConfig = await db.get('SELECT * FROM ad_settings WHERE id = 1');
-                    // On rechope le "vrai" bind_password si besoin, mais authenticateAD dans directory.js le gère ?
-                    // Non, l'appel attend le DTO config
+        // Comparaison insensible à la casse ET aux accents faite côté JS : le LOWER()
+        // de SQLite ne sait pas mettre en minuscule les lettres accentuées (pas d'ICU
+        // par défaut — LOWER('FOURBÉ') reste 'fourbÉ'), ce qui bloquait en 401 les
+        // agents dont le nom/prénom contient un accent (ex. Valérie Fourbé) dès que la
+        // casse de la lettre accentuée différait entre la saisie et la valeur stockée.
+        const normalize = (s) => String(s || '').trim().toLowerCase().normalize('NFC');
+        const targetUsername = normalize(username);
+
+        const issueToken = async (user) => {
+            let permissions = [];
+            if (user.role === 'admin') {
+                // Les admins ont accès à tout, on laissera le frontend gérer, mais mettons ["*"]
+                permissions = ["*"];
+            } else {
+                const roleObj = await db.get('SELECT permissions FROM roles WHERE name = ?', [user.role]);
+                if (roleObj && roleObj.permissions) {
+                    try { permissions = JSON.parse(roleObj.permissions); } catch (e) {}
+                }
+            }
+            const token = jwt.sign({
+                id: user.id,
+                username: user.username,
+                role: user.role,
+                permissions,
+                is_ad: user.is_ad
+            }, SECRET_KEY);
+            return { token, user: { id: user.id, username: user.username, role: user.role, permissions, is_ad: user.is_ad } };
+        };
+
+        try {
+            const allUsers = await db.all('SELECT * FROM users');
+            let user = allUsers.find((u) => normalize(u.username) === targetUsername);
+
+            // 1. Authentification AD en priorité — même logique que AppDSI (qui fonctionne
+            //    pour les comptes accentués) : on tente l'AD dès qu'il est actif, SANS exiger
+            //    qu'un compte local "is_ad" ait été créé au préalable. C'est ce prérequis
+            //    manquant (aucune ligne locale pour l'agent) qui provoquait un 401
+            //    "Identifiants invalides" alors que les identifiants AD étaient corrects : la
+            //    recherche locale échouait avant même d'essayer l'AD. Le compte "admin" local
+            //    reste toujours vérifié en local, pour ne jamais se retrouver bloqué dehors si
+            //    l'AD est en panne.
+            if (targetUsername !== 'admin') {
+                const adConfig = await db.get('SELECT * FROM ad_settings WHERE id = 1');
+                if (adConfig && adConfig.is_enabled && app.locals.authenticateAD) {
                     if (adConfig.bind_password === '********' || adConfig.bind_password === '••••••••') {
                         const dbConfig = await db.get('SELECT bind_password FROM ad_settings WHERE id = 1');
                         adConfig.bind_password = dbConfig.bind_password;
                     }
 
-                    const adUser = await app.locals.authenticateAD(username, password, adConfig);
-                    if (adUser) isValid = true;
-                } else {
-                    console.error('[AUTH] Module AD non chargé');
-                }
-            } else {
-                isValid = user.password && await bcrypt.compare(password, user.password);
-            }
+                    let adUser = null;
+                    try {
+                        adUser = await app.locals.authenticateAD(username, password, adConfig);
+                    } catch (adErr) {
+                        console.error('[AUTH] Erreur AD pendant le login:', adErr.message);
+                    }
 
-            if (isValid) {
-                // Populate roles permissions
-                let permissions = [];
-                if (user.role === 'admin') {
-                    // Les admins ont accès à tout, on laissera le frontend gérer, mais mettons ["*"]
-                    permissions = ["*"];
-                } else {
-                    const roleObj = await db.get('SELECT permissions FROM roles WHERE name = ?', [user.role]);
-                    if (roleObj && roleObj.permissions) {
-                        try { permissions = JSON.parse(roleObj.permissions); } catch(e) {}
+                    if (adUser) {
+                        if (!user) {
+                            // Auto-provisionnement au premier login AD réussi (comme AppDSI) :
+                            // plus besoin qu'un admin crée le compte local à la main au préalable.
+                            const result = await db.run(
+                                'INSERT INTO users (username, password, email, role, is_ad) VALUES (?, ?, ?, ?, 1)',
+                                [username, '', adUser.mail || adUser.email || '', 'user']
+                            );
+                            user = await db.get('SELECT * FROM users WHERE id = ?', [result.lastID]);
+                        } else if (!user.is_ad) {
+                            await db.run('UPDATE users SET is_ad = 1 WHERE id = ?', [user.id]);
+                            user.is_ad = 1;
+                        }
+                        return res.json(await issueToken(user));
                     }
                 }
-
-                const token = jwt.sign({ 
-                    id: user.id, 
-                    username: user.username, 
-                    role: user.role,
-                    permissions,
-                    is_ad: user.is_ad
-                }, SECRET_KEY);
-                
-                res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, is_ad: user.is_ad } });
-            } else {
-                res.status(401).json({ message: 'Identifiants invalides' });
             }
+
+            // 2. Authentification locale (compte admin, comptes non-AD, ou repli si AD
+            //    désactivé/en échec — ex. un compte local créé avec is_ad=0)
+            if (!user || !user.password) {
+                return res.status(401).json({ message: 'Identifiants invalides' });
+            }
+            const isValid = await bcrypt.compare(password, user.password);
+            if (!isValid) {
+                return res.status(401).json({ message: 'Identifiants invalides' });
+            }
+
+            res.json(await issueToken(user));
         } catch (error) {
             console.error('[AUTH ERROR]', error);
             res.status(500).json({ message: error.message });
