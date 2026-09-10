@@ -390,23 +390,27 @@ module.exports = (app, db, authenticateAdmin) => {
         if (!q) return res.status(400).json({ error: 'Query parameter q is required' });
 
         const ldap = require('ldapjs');
+        const { buildAccentInsensitiveOrFilter, flattenLDAPEntry } = require('./ldap_helpers');
         const config = await db.get('SELECT * FROM ad_settings WHERE id = 1 AND is_enabled = 1');
         if (!config) return res.status(503).json({ error: 'AD service disabled' });
 
         const client = ldap.createClient({ url: `ldap://${config.host}:${config.port}` });
         client.bind(config.bind_dn, config.bind_password, (err) => {
             if (err) { client.destroy(); return res.status(500).json({ error: err.message }); }
-            
+
+            // Filtre insensible aux accents (ex. « Valérie ») : voir ldap_helpers.js
             const opts = {
-                filter: `(|(sAMAccountName=${q}*)(mail=${q}*)(cn=${q}*)(displayName=${q}*))`,
+                filter: buildAccentInsensitiveOrFilter(['sAMAccountName', 'mail', 'cn', 'displayName'], q),
                 scope: 'sub',
                 sizeLimit: 5
             };
-            
+
             client.search(config.base_dn, opts, (err, searchRes) => {
                 if (err) { client.destroy(); return res.status(500).json({ error: err.message }); }
                 const entries = [];
-                searchRes.on('searchEntry', (entry) => entries.push(entry.object));
+                searchRes.on('searchEntry', (entry) => {
+                    entries.push(flattenLDAPEntry(entry));
+                });
                 searchRes.on('end', () => { client.destroy(); res.json(entries); });
                 searchRes.on('error', (err) => { client.destroy(); res.status(500).json({ error: err.message }); });
             });
@@ -441,20 +445,30 @@ module.exports = (app, db, authenticateAdmin) => {
         if (!identifier) return res.status(400).json({ error: 'Query parameter identifier is required' });
 
         const ldap = require('ldapjs');
+        const { escapeLDAPFilter, fuzzyAccentLDAPValue, flattenLDAPEntry } = require('./ldap_helpers');
         const config = await db.get('SELECT * FROM ad_settings WHERE id = 1 AND is_enabled = 1');
         if (!config) return res.status(503).json({ error: 'AD service disabled' });
 
         const client = ldap.createClient({ url: `ldap://${config.host}:${config.port}` });
         client.bind(config.bind_dn, config.bind_password, (err) => {
             if (err) { client.destroy(); return res.status(500).json({ error: 'LDAP Bind Error: ' + err.message }); }
-            
-            let filter = `(|(sAMAccountName=*${identifier}*)(mail=*${identifier}*)(userPrincipalName=*${identifier}*)(cn=*${identifier}*))`;
+
+            // Filtre insensible aux accents (ex. « Valérie ») : voir ldap_helpers.js
+            const escaped = escapeLDAPFilter(identifier);
+            const fuzzy = fuzzyAccentLDAPValue(identifier);
+            let filter = `(|(sAMAccountName=*${escaped}*)(mail=*${escaped}*)(userPrincipalName=*${escaped}*)(cn=*${escaped}*)(displayName=*${escaped}*)`
+                + (fuzzy !== escaped ? `(cn=*${fuzzy}*)(displayName=*${fuzzy}*)` : '') + `)`;
 
             // Support multi-term search (e.g. CHEVALIER+MARC or CHEVALIER&MARC)
             if (identifier.includes('+') || identifier.includes('&') || identifier.includes(' ')) {
                 const parts = identifier.split(/[+& ]+/).filter(p => p.trim().length > 0);
                 if (parts.length >= 2) {
-                    const subFilters = parts.map(p => `(|(sn=*${p}*)(givenName=*${p}*)(cn=*${p}*))`);
+                    const subFilters = parts.map(p => {
+                        const pEsc = escapeLDAPFilter(p);
+                        const pFuzzy = fuzzyAccentLDAPValue(p);
+                        return `(|(sn=*${pEsc}*)(givenName=*${pEsc}*)(cn=*${pEsc}*)`
+                            + (pFuzzy !== pEsc ? `(sn=*${pFuzzy}*)(givenName=*${pFuzzy}*)(cn=*${pFuzzy}*)` : '') + `)`;
+                    });
                     filter = `(|${filter}(&${subFilters.join('')}))`;
                 }
             }
@@ -462,19 +476,15 @@ module.exports = (app, db, authenticateAdmin) => {
             const opts = {
                 filter: filter,
                 scope: 'sub',
-                attributes: ['*'] 
+                attributes: ['*']
             };
-            
+
             client.search(config.base_dn, opts, (err, searchRes) => {
                 if (err) { client.destroy(); return res.status(500).json({ error: 'LDAP Search Error: ' + err.message }); }
-                
+
                 const entries = [];
                 searchRes.on('searchEntry', (entry) => {
-                    const obj = { dn: entry.objectName };
-                    entry.attributes.forEach(attr => {
-                        obj[attr.type] = attr.values.length === 1 ? attr.values[0] : attr.values;
-                    });
-                    entries.push(obj);
+                    entries.push(flattenLDAPEntry(entry));
                 });
                 
                 searchRes.on('end', () => {
@@ -521,14 +531,15 @@ module.exports = (app, db, authenticateAdmin) => {
     proxyRouter.post('/ad/authenticate', verifyApiKey, async (req, res) => {
         const { username, password } = req.body;
         const ldap = require('ldapjs');
+        const { escapeLDAPFilter } = require('./ldap_helpers');
         const config = await db.get('SELECT * FROM ad_settings WHERE id = 1 AND is_enabled = 1');
         if (!config) return res.status(503).json({ error: 'AD service disabled' });
 
         const client = ldap.createClient({ url: `ldap://${config.host}:${config.port}` });
         client.bind(config.bind_dn, config.bind_password, (err) => {
             if (err) { client.destroy(); return res.status(500).json({ error: err.message }); }
-            
-            client.search(config.base_dn, { filter: `(sAMAccountName=${username})`, scope: 'sub' }, (err, searchRes) => {
+
+            client.search(config.base_dn, { filter: `(sAMAccountName=${escapeLDAPFilter(username)})`, scope: 'sub' }, (err, searchRes) => {
                 let userDn = null;
                 searchRes.on('searchEntry', (entry) => { userDn = entry.objectName; });
                 searchRes.on('end', () => {

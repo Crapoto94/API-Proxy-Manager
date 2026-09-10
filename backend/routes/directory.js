@@ -1,22 +1,9 @@
 const ldap = require('ldapjs');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
+const { escapeLDAPFilter, fuzzyAccentLDAPValue, flattenLDAPEntry } = require('./ldap_helpers');
 
 module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
-
-    // --- LDAP Helpers ---
-    function flattenLDAPEntry(entry) {
-        if (!entry) return null;
-        const pojo = entry.pojo;
-        if (!pojo) return entry.object || entry;
-        const obj = { dn: pojo.objectName };
-        if (pojo.attributes && Array.isArray(pojo.attributes)) {
-            pojo.attributes.forEach(attr => {
-                obj[attr.type] = attr.values.length === 1 ? attr.values[0] : attr.values;
-            });
-        }
-        return obj;
-    }
 
     async function authenticateAD(username, password, config) {
         return new Promise((resolve, reject) => {
@@ -38,7 +25,7 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
                     return reject(new Error('Erreur de liaison AD : ' + err.message));
                 }
                 const searchOptions = {
-                    filter: `(sAMAccountName=${username})`,
+                    filter: `(sAMAccountName=${escapeLDAPFilter(username)})`,
                     scope: 'sub',
                     attributes: ['dn', 'cn', 'memberOf', 'mail', 'displayName']
                 };
@@ -170,12 +157,20 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
                     return res.status(400).json({ message: 'Échec de l\'authentification du compte de service : ' + err.message });
                 }
                 
+                // Filtre insensible aux accents (ex. « Valérie ») : voir ldap_helpers.js
+                const escapedUser = escapeLDAPFilter(username);
+                const fuzzyUser = fuzzyAccentLDAPValue(username);
+                let testFilter = `(|(sAMAccountName=${escapedUser})(mail=${escapedUser})(cn=${escapedUser})(userPrincipalName=${escapedUser})(displayName=${escapedUser}))`;
+                if (fuzzyUser !== escapedUser) {
+                    testFilter = `(|${testFilter}(cn=${fuzzyUser})(displayName=${fuzzyUser}))`;
+                }
+
                 const searchOptions = {
-                    filter: `(|(sAMAccountName=${username})(mail=${username})(cn=${username})(userPrincipalName=${username}))`,
+                    filter: testFilter,
                     scope: 'sub',
                     attributes: ['dn', 'cn', 'memberOf', 'mail', 'displayName', 'userPrincipalName']
                 };
-                
+
                 console.log(`[AD TEST] Searching with filter: ${searchOptions.filter} in ${base_dn}`);
 
                 client.search(base_dn, searchOptions, (err, searchRes) => {
