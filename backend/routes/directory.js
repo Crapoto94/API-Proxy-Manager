@@ -1,7 +1,7 @@
 const ldap = require('ldapjs');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
-const { fuzzyAccentLDAPValue, decodeEntryAttrs } = require('./ldap_helpers');
+const { fuzzyAccentLDAPValue, decodeEntryAttrs, decodeLDAPString } = require('./ldap_helpers');
 
 module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
 
@@ -19,21 +19,33 @@ module.exports = function(app, db, authenticateAdmin, SECRET_KEY) {
         if (!entry) return null;
         try {
             // Method 1: Standard ldapjs object (getter)
-            const obj = entry.object;
-            if (obj && Object.keys(obj).length > 0) return obj;
+            let obj = entry.object;
+            if (!(obj && Object.keys(obj).length > 0)) {
+                // Method 2: Manual extraction from attributes (most robust fallback)
+                const manualObj = { dn: entry.dn?.toString() || 'unknown' };
+                const attributes = entry.attributes || [];
+                attributes.forEach(attr => {
+                    const type = attr.type || attr.description;
+                    if (type) {
+                        const vals = attr.values || attr._values || [];
+                        manualObj[type] = vals.length === 1 ? vals[0] : vals;
+                    }
+                });
+                obj = manualObj;
+            }
 
-            // Method 2: Manual extraction from attributes (most robust fallback)
-            const manualObj = { dn: entry.dn?.toString() || 'unknown' };
-            const attributes = entry.attributes || [];
-            attributes.forEach(attr => {
-                const type = attr.type || attr.description;
-                if (type) {
-                    const vals = attr.values || attr._values || [];
-                    manualObj[type] = vals.length === 1 ? vals[0] : vals;
-                }
-            });
-            
-            return manualObj;
+            // Décode le DN s'il est échappé RFC4514 (ex. "CN=FOURB\c3\89  Val\c3\a9rie,..."
+            // pour "CN=FOURBÉ Valérie,..."). Indispensable pour le bind utilisateur qui suit
+            // (voir authenticateAD ci-dessous) : sans ce décodage, le bind final avec le mot
+            // de passe de l'utilisateur échoue en "Invalid Credentials" — même mot de passe
+            // correct — dès que le nom/prénom (donc le CN) contient un accent, car AD ne
+            // reconnaît pas le DN encore sous sa forme échappée. Même correctif que AppDSI
+            // (shared/utils.js).
+            if (obj && typeof obj.dn === 'string' && obj.dn.includes('\\')) {
+                obj = { ...obj, dn: decodeLDAPString(obj.dn) };
+            }
+
+            return obj;
         } catch (e) {
             console.error('[AD] Flatten error:', e.message);
             return { dn: entry.dn?.toString() || 'unknown', error: e.message };

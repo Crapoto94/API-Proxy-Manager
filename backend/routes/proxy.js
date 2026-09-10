@@ -1,7 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
-const { fuzzyAccentLDAPValue, decodeEntryAttrs } = require('./ldap_helpers');
+const { fuzzyAccentLDAPValue, decodeEntryAttrs, decodeLDAPString } = require('./ldap_helpers');
 
 /**
  * @openapi
@@ -27,21 +27,28 @@ module.exports = (app, db, authenticateAdmin) => {
         if (!entry) return null;
         try {
             // Method 1: Standard ldapjs object (getter)
-            const obj = entry.object;
-            if (obj && Object.keys(obj).length > 0) return obj;
+            let obj = entry.object;
+            if (!(obj && Object.keys(obj).length > 0)) {
+                // Method 2: Manual extraction from attributes (most robust fallback)
+                const manualObj = { dn: entry.dn?.toString() || 'unknown' };
+                const attributes = entry.attributes || [];
+                attributes.forEach(attr => {
+                    const type = attr.type || attr.description;
+                    if (type) {
+                        const vals = attr.values || attr._values || [];
+                        manualObj[type] = vals.length === 1 ? vals[0] : vals;
+                    }
+                });
+                obj = manualObj;
+            }
 
-            // Method 2: Manual extraction from attributes (most robust fallback)
-            const manualObj = { dn: entry.dn?.toString() || 'unknown' };
-            const attributes = entry.attributes || [];
-            attributes.forEach(attr => {
-                const type = attr.type || attr.description;
-                if (type) {
-                    const vals = attr.values || attr._values || [];
-                    manualObj[type] = vals.length === 1 ? vals[0] : vals;
-                }
-            });
-            
-            return manualObj;
+            // Décode le DN s'il est échappé RFC4514 (accents, ex. "\c3\89" -> "É") — voir
+            // directory.js / ldap_helpers.js pour le contexte complet (bind "Invalid Credentials").
+            if (obj && typeof obj.dn === 'string' && obj.dn.includes('\\')) {
+                obj = { ...obj, dn: decodeLDAPString(obj.dn) };
+            }
+
+            return obj;
         } catch (e) {
             console.error('[AD] Flatten error:', e.message);
             return { dn: entry.dn?.toString() || 'unknown', error: e.message };
@@ -614,6 +621,7 @@ module.exports = (app, db, authenticateAdmin) => {
                     entry.attributes.forEach(attr => {
                         obj[attr.type] = attr.values.length === 1 ? attr.values[0] : attr.values;
                     });
+                    if (typeof obj.dn === 'string' && obj.dn.includes('\\')) obj.dn = decodeLDAPString(obj.dn);
                     entries.push(decodeEntryAttrs(obj));
                 });
                 
@@ -685,8 +693,14 @@ module.exports = (app, db, authenticateAdmin) => {
                 }
 
                 let userDn = null;
-                searchRes.on('searchEntry', (entry) => { 
-                    userDn = entry.pojo ? entry.pojo.objectName : (entry.objectName || entry.dn); 
+                searchRes.on('searchEntry', (entry) => {
+                    userDn = entry.pojo ? entry.pojo.objectName : (entry.objectName || entry.dn);
+                    // Décode le DN s'il est échappé RFC4514 (accents, ex. "\c3\89" -> "É") —
+                    // sinon le bind ci-dessous échoue en "Invalid credentials" pour les DN
+                    // accentués même avec le bon mot de passe. Voir directory.js/ldap_helpers.js.
+                    if (typeof userDn === 'string' && userDn.includes('\\')) {
+                        userDn = decodeLDAPString(userDn);
+                    }
                 });
 
                 searchRes.on('end', () => {
