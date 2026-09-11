@@ -143,6 +143,8 @@ module.exports = (app, db, authenticateAdmin) => {
             else if (path.startsWith('/o365/synced-messages')) requiredPermission = 'o365_read';
             else if (path.startsWith('/o365/harvest')) requiredPermission = 'o365_harvest';
             else if (path.startsWith('/glpi/')) requiredPermission = 'glpi_read';
+            else if (path.startsWith('/ai/query')) requiredPermission = 'ai_query';
+            else if (path.startsWith('/ai/models')) requiredPermission = 'ai_read';
 
             const authorizedRoutes = JSON.parse(appEntry.authorized_routes || '["*"]');
             
@@ -939,6 +941,70 @@ module.exports = (app, db, authenticateAdmin) => {
             res.json({ status: 'triggered', type });
         } catch (error) {
             res.json({ status: 'accepted', message: 'Sync request received' });
+        }
+    });
+
+    // --- AI (Intelligence Artificielle) ---
+    /**
+     * @openapi
+     * /api/v1/ai/models:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Liste les modèles IA configurés et l'état de leur dernier test (test automatique toutes les heures)
+     *     security: [{ ApiKeyAuth: [] }]
+     *     responses:
+     *       200:
+     *         description: Liste des modèles avec leur statut
+     */
+    proxyRouter.get('/ai/models', verifyApiKey, async (req, res) => {
+        try {
+            const models = await app.locals.getAiModelsWithStatus();
+            res.json(models);
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/ai/query:
+     *   post:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Interroge un modèle IA configuré (bascule automatique sur un autre fournisseur en cas d'échec)
+     *     security: [{ ApiKeyAuth: [] }]
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [prompt]
+     *             properties:
+     *               prompt:
+     *                 type: string
+     *                 example: "Résume ce texte en une phrase : ..."
+     *               model:
+     *                 type: string
+     *                 description: "Identifiant du modèle souhaité (voir /api/v1/ai/models). Optionnel : le modèle par défaut est utilisé sinon."
+     *     responses:
+     *       200:
+     *         description: Réponse du modèle IA
+     *       400:
+     *         description: Prompt manquant
+     *       503:
+     *         description: Aucun modèle IA disponible ou tous les modèles ont échoué
+     */
+    proxyRouter.post('/ai/query', verifyApiKey, async (req, res) => {
+        const { prompt, model } = req.body;
+        if (!prompt || !String(prompt).trim()) {
+            return res.status(400).json({ error: 'Le champ prompt est requis' });
+        }
+        try {
+            const result = await app.locals.runAiQuery(prompt, model);
+            console.log(`[PROXY AI] Query for ${req.externalApp.name} answered by ${result.provider_label} (${result.model})`);
+            res.json({ status: 'success', ...result });
+        } catch (error) {
+            res.status(503).json({ error: error.message });
         }
     });
 

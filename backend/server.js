@@ -376,12 +376,26 @@ async function startServer() {
     require('./routes/database')(app, db, authenticateAdmin);
     require('./routes/glpi')(app, db, authenticateAdmin);
     require('./routes/users')(app, db, authenticateAdmin);
+    require('./routes/ai')(app, db, authenticateAdmin);
     require('./routes/proxy')(app, db, authenticateAdmin);
     require('./routes/o365')(app, db, authenticateAdmin);
-    
+
     app.listen(PORT, () => {
         console.log(`[APM] Backend started on http://localhost:${PORT}`);
     });
+
+    // --- AI health check scheduler ---
+    // Teste rapidement tous les modèles IA configurés toutes les heures (comme demandé),
+    // pour que /api/v1/ai/models puisse renvoyer un statut sans re-tester en direct à
+    // chaque appel. Premier passage peu après le démarrage pour ne pas partir avec un
+    // statut "jamais testé", puis un passage par heure — même esprit que le
+    // monitoring_scheduler_loop d'analyse-mail, sans dépendance supplémentaire (setInterval).
+    setTimeout(() => {
+        app.locals.testAllModels().catch(e => console.error('[AI HEALTHCHECK] Error:', e.message));
+    }, 10000);
+    setInterval(() => {
+        app.locals.testAllModels().catch(e => console.error('[AI HEALTHCHECK] Error:', e.message));
+    }, 60 * 60 * 1000);
 }
 
 startServer().catch(err => {

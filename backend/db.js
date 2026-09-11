@@ -180,6 +180,37 @@ async function setupDb() {
             password TEXT,
             is_enabled INTEGER DEFAULT 0
         );
+
+        -- Paramétrage IA (mêmes fournisseurs/paramètres que l'outil analyse-mail : Groq,
+        -- NVIDIA NIM, Ollama). ai_models : un modèle nommé par fournisseur (plusieurs
+        -- possibles). ai_model_status : résultat du dernier test (manuel ou planifié
+        -- toutes les heures) par modèle, consulté par l'API externe sans re-tester en direct.
+        CREATE TABLE IF NOT EXISTS ai_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            groq_api_key TEXT,
+            nvidia_api_key TEXT,
+            ollama_url TEXT,
+            ollama_enabled INTEGER DEFAULT 0,
+            default_model_id INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_models (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL,
+            name TEXT NOT NULL,
+            model TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_model_status (
+            model_id INTEGER PRIMARY KEY,
+            status TEXT DEFAULT 'unknown',
+            message TEXT,
+            latency_ms INTEGER,
+            tested_at DATETIME,
+            FOREIGN KEY(model_id) REFERENCES ai_models(id) ON DELETE CASCADE
+        );
     `);
 
     // Migration to add authorized_routes if it doesn't exist (for existing databases)
@@ -212,6 +243,7 @@ async function setupDb() {
     await db.run('INSERT OR IGNORE INTO security_settings (id) VALUES (1)');
     await db.run('INSERT OR IGNORE INTO o365_settings (id) VALUES (1)');
     await db.run('INSERT OR IGNORE INTO glpi_settings (id) VALUES (1)');
+    await db.run('INSERT OR IGNORE INTO ai_settings (id) VALUES (1)');
 
     // Seed default admin user if no users exist
     const userCount = await db.get('SELECT COUNT(*) as c FROM users');

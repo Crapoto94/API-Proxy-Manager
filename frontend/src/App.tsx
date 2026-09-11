@@ -15,7 +15,8 @@ import {
   X,
   ScrollText,
   Bell,
-  Menu
+  Menu,
+  Bot
 } from 'lucide-react';
 import { API_BASE_URL, setApiBaseUrl } from './config';
 
@@ -69,6 +70,7 @@ const Layout = ({ children, onLogout, user }: { children: React.ReactNode, onLog
           {hasPermission('/logs') && <SidebarLink to="/logs" icon={ScrollText}>Logs Proxy</SidebarLink>}
           {hasPermission('/directory') && <SidebarLink to="/directory" icon={ShieldCheck}>Annuaire AD</SidebarLink>}
           {hasPermission('/o365') && <SidebarLink to="/o365" icon={Mail}>Messagerie O365</SidebarLink>}
+          {hasPermission('/ai-settings') && <SidebarLink to="/ai-settings" icon={Bot}>Intelligence Artificielle</SidebarLink>}
           {hasPermission('/database') && <SidebarLink to="/database" icon={Database}>Oracle & Sync</SidebarLink>}
           {hasPermission('/sql') && <SidebarLink to="/sql" icon={Search}>SQL Explorer</SidebarLink>}
           {hasPermission('/users') && <SidebarLink to="/users" icon={Users}>Utilisateurs</SidebarLink>}
@@ -187,6 +189,7 @@ import UserSettings from './pages/UserSettings';
 import AppManagement from './pages/AppManagement';
 import SecuritySettings from './pages/SecuritySettings';
 import O365Settings from './pages/O365Settings';
+import AISettings from './pages/AISettings';
 import ProxyLogs from './pages/ProxyLogs';
 import Login from './pages/Login';
 
@@ -236,6 +239,7 @@ const App = () => {
           <Route path="/apps" element={<AppManagement />} />
           <Route path="/security" element={<SecuritySettings />} />
           <Route path="/o365" element={<O365Settings />} />
+          <Route path="/ai-settings" element={<AISettings />} />
           <Route path="/api-docs" element={<ApiDocs />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

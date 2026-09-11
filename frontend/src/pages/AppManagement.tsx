@@ -15,7 +15,8 @@ import {
   Mail,
   Loader2,
   Power,
-  Database
+  Database,
+  Bot
 } from 'lucide-react';
 import { API_BASE_URL } from '../config';
 
@@ -41,6 +42,8 @@ const AVAILABLE_PERMISSIONS = [
     { id: 'o365_read', name: 'Lecture O365', icon: Mail },
     { id: 'o365_harvest', name: 'Moissonnage O365', icon: RefreshCw },
     { id: 'glpi_read', name: 'Stats GLPI', icon: Activity },
+    { id: 'ai_read', name: 'Liste modèles IA', icon: Bot },
+    { id: 'ai_query', name: 'Interrogation IA', icon: Bot },
 ];
 
 import { RefreshCw, Edit3 } from 'lucide-react';
