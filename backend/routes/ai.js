@@ -206,7 +206,12 @@ async function runAiQuery(db, prompt, preferredModelId) {
     const seenProviders = new Set();
 
     if (preferredModelId) {
-        const chosen = activeModels.find(m => String(m.id) === String(preferredModelId) || m.key === String(preferredModelId));
+        // Accepte l'id numérique, la clé "provider:id", l'identifiant technique du modèle
+        // (ex. "llama-3.1-8b-instant") ou son nom convivial (ex. "Rapide") — un appelant
+        // externe n'a en général connaissance que de ce que /api/v1/ai/models lui a montré.
+        const wanted = String(preferredModelId);
+        const chosen = activeModels.find(m =>
+            String(m.id) === wanted || m.key === wanted || m.model === wanted || m.name === wanted);
         if (chosen) {
             ordered.push(chosen);
             seenProviders.add(chosen.provider);
