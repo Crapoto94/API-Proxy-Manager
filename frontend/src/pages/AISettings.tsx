@@ -22,6 +22,7 @@ interface AiSettings {
     ollama_url: string;
     ollama_enabled: number;
     default_model_id: number | null;
+    query_timeout_ms: number;
 }
 
 interface AiModel {
@@ -80,7 +81,8 @@ const AISettings: React.FC = () => {
         nvidia_api_key: '',
         ollama_url: '',
         ollama_enabled: 0,
-        default_model_id: null
+        default_model_id: null,
+        query_timeout_ms: 300000
     });
     const [models, setModels] = useState<AiModel[]>([]);
     const [loading, setLoading] = useState(true);
@@ -249,6 +251,23 @@ const AISettings: React.FC = () => {
                                     <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${settings.ollama_enabled ? 'right-1' : 'left-1'}`} />
                                 </button>
                                 <span className="text-sm font-bold text-slate-700">Activer Ollama</span>
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">
+                                    Délai d'attente /api/v1/ai/query (secondes)
+                                </label>
+                                <input
+                                    type="number"
+                                    min={10}
+                                    max={1200}
+                                    step={10}
+                                    value={Math.round((settings.query_timeout_ms ?? 300000) / 1000)}
+                                    onChange={e => setSettings({ ...settings, query_timeout_ms: (Number(e.target.value) || 300) * 1000 })}
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-3 px-5 outline-none focus:border-blue-500 transition-all font-bold text-sm"
+                                />
+                                <p className="text-xs text-slate-400 font-medium ml-1">
+                                    Augmentez cette valeur si une IA locale (Ollama) ou un prompt long (ex. résumé de réunion) dépasse le délai par défaut (5 min). Pensez aussi au délai du reverse-proxy éventuel devant cette API.
+                                </p>
                             </div>
                             <div className="space-y-2">
                                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Modèle par défaut</label>

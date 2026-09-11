@@ -191,7 +191,8 @@ async function setupDb() {
             nvidia_api_key TEXT,
             ollama_url TEXT,
             ollama_enabled INTEGER DEFAULT 0,
-            default_model_id INTEGER
+            default_model_id INTEGER,
+            query_timeout_ms INTEGER DEFAULT 300000
         );
 
         CREATE TABLE IF NOT EXISTS ai_models (
@@ -229,6 +230,16 @@ async function setupDb() {
     try {
         await db.run('ALTER TABLE proxy_logs ADD COLUMN response_payload TEXT');
         console.log('[DB] Colonne response_payload ajoutée à proxy_logs');
+    } catch (e) {
+        // Column probably already exists
+    }
+
+    // Délai d'attente (ms) pour /api/v1/ai/query — configurable, car une IA locale
+    // (Ollama, gros modèle) peut être bien plus lente que les API cloud (Groq/NVIDIA).
+    // Défaut 300000 (5 min), au lieu des 60000 auparavant codés en dur dans runAiQuery.
+    try {
+        await db.run('ALTER TABLE ai_settings ADD COLUMN query_timeout_ms INTEGER DEFAULT 300000');
+        console.log('[DB] Colonne query_timeout_ms ajoutée à ai_settings');
     } catch (e) {
         // Column probably already exists
     }

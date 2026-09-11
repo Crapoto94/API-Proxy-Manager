@@ -18,6 +18,13 @@ const NVIDIA_API_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
 
 const PROVIDER_LABELS = { groq: 'Groq', nvidia: 'NVIDIA', ollama: 'Ollama' };
 
+// Délai d'attente par défaut pour /api/v1/ai/query (runAiQuery), quand
+// ai_settings.query_timeout_ms n'est pas configuré. Volontairement plus large
+// que l'ancien 60000ms codé en dur : une IA locale (Ollama, gros modèle) ou un
+// prompt long (résumé de réunion complet) peut largement dépasser 60s.
+// Configurable via l'écran Paramétrage IA (PUT /api/ai/settings).
+const DEFAULT_QUERY_TIMEOUT_MS = 300000; // 5 min
+
 // Prompt utilisé pour le test de santé (bouton "Tester" et job planifié toutes les heures) :
 // volontairement minimal, identique à celui d'analyse-mail, pour vérifier rapidement qu'un
 // modèle répond sans consommer inutilement de quota.
@@ -227,10 +234,14 @@ async function runAiQuery(db, prompt, preferredModelId) {
         if (candidate) { ordered.push(candidate); seenProviders.add(provider); }
     }
 
+    const timeout = (settings && Number.isFinite(settings.query_timeout_ms) && settings.query_timeout_ms > 0)
+        ? settings.query_timeout_ms
+        : DEFAULT_QUERY_TIMEOUT_MS;
+
     const errors = [];
     for (const m of ordered) {
         try {
-            const response = await callProviderChat(m.provider, prompt, settings, m.model, 60000);
+            const response = await callProviderChat(m.provider, prompt, settings, m.model, timeout);
             return { provider: m.provider, provider_label: m.provider_label, model: m.model, model_name: m.name, response };
         } catch (error) {
             errors.push(`${m.provider_label} (${m.model}) : ${error.message}`);
@@ -266,12 +277,18 @@ module.exports = (app, db, authenticateAdmin) => {
      *     summary: Met à jour le paramétrage IA
      */
     router.put('/settings', authenticateAdmin, async (req, res) => {
-        const { groq_api_key, nvidia_api_key, ollama_url, ollama_enabled, default_model_id } = req.body;
+        const { groq_api_key, nvidia_api_key, ollama_url, ollama_enabled, default_model_id, query_timeout_ms } = req.body;
         try {
+            let timeout = parseInt(query_timeout_ms, 10);
+            if (!Number.isFinite(timeout) || timeout <= 0) timeout = DEFAULT_QUERY_TIMEOUT_MS;
+            // Bornes de sécurité : au moins 10s, au plus 20 min (évite qu'une saisie
+            // erronée ne bloque un worker indéfiniment).
+            timeout = Math.min(Math.max(timeout, 10000), 1200000);
+
             await db.run(
                 `UPDATE ai_settings SET groq_api_key = ?, nvidia_api_key = ?, ollama_url = ?,
-                    ollama_enabled = ?, default_model_id = ? WHERE id = 1`,
-                [groq_api_key || '', nvidia_api_key || '', ollama_url || '', ollama_enabled ? 1 : 0, default_model_id || null]
+                    ollama_enabled = ?, default_model_id = ?, query_timeout_ms = ? WHERE id = 1`,
+                [groq_api_key || '', nvidia_api_key || '', ollama_url || '', ollama_enabled ? 1 : 0, default_model_id || null, timeout]
             );
             res.json({ message: 'Paramètres IA enregistrés' });
         } catch (error) {
