@@ -23,6 +23,7 @@ interface AiSettings {
     ollama_enabled: number;
     default_model_id: number | null;
     query_timeout_ms: number;
+    max_tokens: number;
 }
 
 interface AiModel {
@@ -82,7 +83,8 @@ const AISettings: React.FC = () => {
         ollama_url: '',
         ollama_enabled: 0,
         default_model_id: null,
-        query_timeout_ms: 300000
+        query_timeout_ms: 300000,
+        max_tokens: 16000
     });
     const [models, setModels] = useState<AiModel[]>([]);
     const [loading, setLoading] = useState(true);
@@ -267,6 +269,23 @@ const AISettings: React.FC = () => {
                                 />
                                 <p className="text-xs text-slate-400 font-medium ml-1">
                                     Augmentez cette valeur si une IA locale (Ollama) ou un prompt long (ex. résumé de réunion) dépasse le délai par défaut (5 min). Pensez aussi au délai du reverse-proxy éventuel devant cette API.
+                                </p>
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">
+                                    Longueur max de réponse (tokens)
+                                </label>
+                                <input
+                                    type="number"
+                                    min={256}
+                                    max={128000}
+                                    step={500}
+                                    value={settings.max_tokens ?? 16000}
+                                    onChange={e => setSettings({ ...settings, max_tokens: Number(e.target.value) || 16000 })}
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-3 px-5 outline-none focus:border-blue-500 transition-all font-bold text-sm"
+                                />
+                                <p className="text-xs text-slate-400 font-medium ml-1">
+                                    Si une réponse se termine par « ⚠️ Réponse tronquée (limite de longueur atteinte). », augmentez cette valeur. Sans lien avec un coût API à limiter — un modèle local (ex. matériel dédié) peut monter beaucoup plus haut que ce défaut.
                                 </p>
                             </div>
                             <div className="space-y-2">

@@ -192,7 +192,8 @@ async function setupDb() {
             ollama_url TEXT,
             ollama_enabled INTEGER DEFAULT 0,
             default_model_id INTEGER,
-            query_timeout_ms INTEGER DEFAULT 300000
+            query_timeout_ms INTEGER DEFAULT 300000,
+            max_tokens INTEGER DEFAULT 16000
         );
 
         CREATE TABLE IF NOT EXISTS ai_models (
@@ -240,6 +241,17 @@ async function setupDb() {
     try {
         await db.run('ALTER TABLE ai_settings ADD COLUMN query_timeout_ms INTEGER DEFAULT 300000');
         console.log('[DB] Colonne query_timeout_ms ajoutée à ai_settings');
+    } catch (e) {
+        // Column probably already exists
+    }
+
+    // Longueur max de réponse (max_tokens) — configurable, car codée en dur à 4000
+    // auparavant (callOpenAiCompatible) : trop court pour un modèle local puissant
+    // (ex. gros modèle tournant sur du matériel dédié en local) dont les réponses se
+    // faisaient couper ("⚠️ Réponse tronquée..."), sans lien avec un coût API à limiter.
+    try {
+        await db.run('ALTER TABLE ai_settings ADD COLUMN max_tokens INTEGER DEFAULT 16000');
+        console.log('[DB] Colonne max_tokens ajoutée à ai_settings');
     } catch (e) {
         // Column probably already exists
     }

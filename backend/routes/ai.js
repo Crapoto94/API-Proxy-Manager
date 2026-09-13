@@ -25,6 +25,14 @@ const PROVIDER_LABELS = { groq: 'Groq', nvidia: 'NVIDIA', ollama: 'Ollama' };
 // Configurable via l'écran Paramétrage IA (PUT /api/ai/settings).
 const DEFAULT_QUERY_TIMEOUT_MS = 300000; // 5 min
 
+// Longueur max de réponse (max_tokens, en tokens), quand ai_settings.max_tokens n'est pas
+// configuré. Remplace l'ancienne valeur codée en dur (4000) qui coupait les réponses un peu
+// longues ("⚠️ Réponse tronquée (limite de longueur atteinte)." — ajouté ci-dessous quand
+// finish_reason === 'length') — pas de raison de brider un modèle local (ex. matériel dédié)
+// comme on limiterait un coût d'API cloud. Configurable via l'écran Paramétrage IA
+// (PUT /api/ai/settings), comme query_timeout_ms.
+const DEFAULT_MAX_TOKENS = 16000;
+
 // Prompt utilisé pour le test de santé (bouton "Tester" et job planifié toutes les heures) :
 // volontairement minimal, identique à celui d'analyse-mail, pour vérifier rapidement qu'un
 // modèle répond sans consommer inutilement de quota.
@@ -35,13 +43,13 @@ const HEALTH_CHECK_PROMPT = 'Réponds uniquement par : OK';
  * retourne le texte de la réponse. Port JS de _call_openai_compatible_chat (analyse-mail
  * app.py:3815).
  */
-async function callOpenAiCompatible(apiUrl, apiKey, model, prompt, timeout, providerLabel) {
+async function callOpenAiCompatible(apiUrl, apiKey, model, prompt, timeout, providerLabel, maxTokens = DEFAULT_MAX_TOKENS) {
     try {
         const response = await axios.post(apiUrl, {
             model,
             messages: [{ role: 'user', content: prompt }],
             temperature: 0.3,
-            max_tokens: 4000
+            max_tokens: maxTokens
         }, {
             timeout,
             headers: {
@@ -73,27 +81,27 @@ async function callOpenAiCompatible(apiUrl, apiKey, model, prompt, timeout, prov
     }
 }
 
-async function callGroqChat(prompt, apiKey, model, timeout = 60000) {
+async function callGroqChat(prompt, apiKey, model, timeout = 60000, maxTokens = DEFAULT_MAX_TOKENS) {
     if (!apiKey) throw new Error('Clé API Groq non configurée');
-    return callOpenAiCompatible(GROQ_API_URL, apiKey, model, prompt, timeout, 'Groq');
+    return callOpenAiCompatible(GROQ_API_URL, apiKey, model, prompt, timeout, 'Groq', maxTokens);
 }
 
-async function callNvidiaChat(prompt, apiKey, model, timeout = 60000) {
+async function callNvidiaChat(prompt, apiKey, model, timeout = 60000, maxTokens = DEFAULT_MAX_TOKENS) {
     if (!apiKey) throw new Error('Clé API NVIDIA non configurée');
-    return callOpenAiCompatible(NVIDIA_API_URL, apiKey, model, prompt, timeout, 'NVIDIA');
+    return callOpenAiCompatible(NVIDIA_API_URL, apiKey, model, prompt, timeout, 'NVIDIA', maxTokens);
 }
 
-async function callOllamaChat(prompt, url, model, timeout = 120000) {
+async function callOllamaChat(prompt, url, model, timeout = 120000, maxTokens = DEFAULT_MAX_TOKENS) {
     if (!url) throw new Error("URL de l'instance Ollama non configurée");
     const ollamaApiUrl = url.replace(/\/$/, '') + '/v1/chat/completions';
     // Ollama n'exige pas de clé API — un jeton factice suffit pour le header Authorization.
-    return callOpenAiCompatible(ollamaApiUrl, 'ollama', model, prompt, timeout, 'Ollama');
+    return callOpenAiCompatible(ollamaApiUrl, 'ollama', model, prompt, timeout, 'Ollama', maxTokens);
 }
 
-async function callProviderChat(provider, prompt, settings, model, timeout) {
-    if (provider === 'groq') return callGroqChat(prompt, settings.groq_api_key, model, timeout);
-    if (provider === 'nvidia') return callNvidiaChat(prompt, settings.nvidia_api_key, model, timeout);
-    if (provider === 'ollama') return callOllamaChat(prompt, settings.ollama_url, model, timeout);
+async function callProviderChat(provider, prompt, settings, model, timeout, maxTokens = DEFAULT_MAX_TOKENS) {
+    if (provider === 'groq') return callGroqChat(prompt, settings.groq_api_key, model, timeout, maxTokens);
+    if (provider === 'nvidia') return callNvidiaChat(prompt, settings.nvidia_api_key, model, timeout, maxTokens);
+    if (provider === 'ollama') return callOllamaChat(prompt, settings.ollama_url, model, timeout, maxTokens);
     throw new Error(`Fournisseur inconnu : ${provider}`);
 }
 
@@ -237,11 +245,14 @@ async function runAiQuery(db, prompt, preferredModelId) {
     const timeout = (settings && Number.isFinite(settings.query_timeout_ms) && settings.query_timeout_ms > 0)
         ? settings.query_timeout_ms
         : DEFAULT_QUERY_TIMEOUT_MS;
+    const maxTokens = (settings && Number.isFinite(settings.max_tokens) && settings.max_tokens > 0)
+        ? settings.max_tokens
+        : DEFAULT_MAX_TOKENS;
 
     const errors = [];
     for (const m of ordered) {
         try {
-            const response = await callProviderChat(m.provider, prompt, settings, m.model, timeout);
+            const response = await callProviderChat(m.provider, prompt, settings, m.model, timeout, maxTokens);
             return { provider: m.provider, provider_label: m.provider_label, model: m.model, model_name: m.name, response };
         } catch (error) {
             errors.push(`${m.provider_label} (${m.model}) : ${error.message}`);
@@ -277,7 +288,7 @@ module.exports = (app, db, authenticateAdmin) => {
      *     summary: Met à jour le paramétrage IA
      */
     router.put('/settings', authenticateAdmin, async (req, res) => {
-        const { groq_api_key, nvidia_api_key, ollama_url, ollama_enabled, default_model_id, query_timeout_ms } = req.body;
+        const { groq_api_key, nvidia_api_key, ollama_url, ollama_enabled, default_model_id, query_timeout_ms, max_tokens } = req.body;
         try {
             let timeout = parseInt(query_timeout_ms, 10);
             if (!Number.isFinite(timeout) || timeout <= 0) timeout = DEFAULT_QUERY_TIMEOUT_MS;
@@ -285,10 +296,16 @@ module.exports = (app, db, authenticateAdmin) => {
             // erronée ne bloque un worker indéfiniment).
             timeout = Math.min(Math.max(timeout, 10000), 1200000);
 
+            let maxTokens = parseInt(max_tokens, 10);
+            if (!Number.isFinite(maxTokens) || maxTokens <= 0) maxTokens = DEFAULT_MAX_TOKENS;
+            // Bornes de sécurité : au moins 256 tokens (réponse minimale exploitable), au
+            // plus 128000 (au-delà, la plupart des fournisseurs rejettent la requête eux-mêmes).
+            maxTokens = Math.min(Math.max(maxTokens, 256), 128000);
+
             await db.run(
                 `UPDATE ai_settings SET groq_api_key = ?, nvidia_api_key = ?, ollama_url = ?,
-                    ollama_enabled = ?, default_model_id = ?, query_timeout_ms = ? WHERE id = 1`,
-                [groq_api_key || '', nvidia_api_key || '', ollama_url || '', ollama_enabled ? 1 : 0, default_model_id || null, timeout]
+                    ollama_enabled = ?, default_model_id = ?, query_timeout_ms = ?, max_tokens = ? WHERE id = 1`,
+                [groq_api_key || '', nvidia_api_key || '', ollama_url || '', ollama_enabled ? 1 : 0, default_model_id || null, timeout, maxTokens]
             );
             res.json({ message: 'Paramètres IA enregistrés' });
         } catch (error) {
