@@ -394,6 +394,10 @@ function startAiQueryAsync(db, prompt, preferredModelId) {
                     const onChunk = (delta, fullSoFar) => {
                         job.charsReceived = fullSoFar.length;
                         job.tokensReceived = Math.round(job.charsReceived / 4);
+                        // Texte partiel exposé en direct (status='running') — permet à
+                        // l'appelant d'afficher la réponse au fil de l'eau plutôt qu'attendre
+                        // la complétion ; réécrit avec la valeur définitive à la complétion.
+                        job.response = fullSoFar;
                         job.provider = m.provider;
                         job.provider_label = m.provider_label;
                         job.model = m.model;
