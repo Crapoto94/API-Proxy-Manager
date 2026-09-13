@@ -1008,6 +1008,75 @@ module.exports = (app, db, authenticateAdmin) => {
         }
     });
 
+    /**
+     * @openapi
+     * /api/v1/ai/query-async:
+     *   post:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Variante asynchrone de /api/v1/ai/query — démarre la génération et renvoie
+     *       immédiatement un queryId à poller sur /api/v1/ai/query-progress/{queryId}, qui
+     *       remonte le nombre de tokens reçus en temps réel (streaming SSE côté fournisseur)
+     *       au lieu d'attendre la réponse complète.
+     *     security: [{ ApiKeyAuth: [] }]
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [prompt]
+     *             properties:
+     *               prompt:
+     *                 type: string
+     *               model:
+     *                 type: string
+     *                 description: "Identifiant du modèle souhaité (voir /api/v1/ai/models). Optionnel."
+     *     responses:
+     *       200:
+     *         description: queryId à poller
+     *       400:
+     *         description: Prompt manquant
+     */
+    proxyRouter.post('/ai/query-async', verifyApiKey, (req, res) => {
+        const { prompt, model } = req.body;
+        if (!prompt || !String(prompt).trim()) {
+            return res.status(400).json({ error: 'Le champ prompt est requis' });
+        }
+        try {
+            const queryId = app.locals.startAiQueryAsync(prompt, model);
+            res.json({ queryId });
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/ai/query-progress/{queryId}:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Progression d'une génération lancée via /api/v1/ai/query-async.
+     *       status='running' : tokensReceived (estimation) augmente en temps réel.
+     *       status='completed' : la réponse finale est dans `response` (mêmes champs que
+     *       /api/v1/ai/query). status='error' : le détail est dans `error`.
+     *     security: [{ ApiKeyAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: queryId
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200:
+     *         description: État du job
+     *       404:
+     *         description: queryId introuvable (expiré après 35 min, ou jamais existé)
+     */
+    proxyRouter.get('/ai/query-progress/:queryId', verifyApiKey, (req, res) => {
+        const job = app.locals.getQueryJobStatus(req.params.queryId);
+        if (!job) return res.status(404).json({ error: 'queryId introuvable (expiré ou jamais existé)' });
+        res.json(job);
+    });
+
     // --- Admin APIs for External Apps ---
     adminRouter.get('/apps', authenticateAdmin, async (req, res) => {
         const apps = await db.all('SELECT * FROM external_apps');

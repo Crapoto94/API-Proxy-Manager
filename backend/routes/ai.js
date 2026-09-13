@@ -38,40 +38,118 @@ const DEFAULT_MAX_TOKENS = 16000;
 // modèle répond sans consommer inutilement de quota.
 const HEALTH_CHECK_PROMPT = 'Réponds uniquement par : OK';
 
+/** Draine un flux Node en texte — utilisé pour lire le corps d'une réponse d'erreur reçue
+ * en mode streaming (responseType 'stream'), afin d'en extraire un message exploitable. */
+function streamToString(stream) {
+    return new Promise((resolve, reject) => {
+        let data = '';
+        stream.on('data', c => { data += c.toString('utf8'); });
+        stream.on('end', () => resolve(data));
+        stream.on('error', reject);
+    });
+}
+
 /**
  * Appelle une API de complétion de chat compatible OpenAI (Groq, NVIDIA NIM, Ollama) et
  * retourne le texte de la réponse. Port JS de _call_openai_compatible_chat (analyse-mail
  * app.py:3815).
+ *
+ * Si `onChunk(delta, fullSoFar)` est fourni, la requête passe en streaming SSE
+ * (stream: true côté fournisseur) et `onChunk` est appelé à chaque fragment de texte reçu —
+ * permet de suivre une génération en temps réel (cf. startAiQueryAsync / query-progress)
+ * au lieu d'attendre la réponse complète comme le fait l'appel classique.
  */
-async function callOpenAiCompatible(apiUrl, apiKey, model, prompt, timeout, providerLabel, maxTokens = DEFAULT_MAX_TOKENS) {
+async function callOpenAiCompatible(apiUrl, apiKey, model, prompt, timeout, providerLabel, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null) {
+    const useStream = typeof onChunk === 'function';
     try {
         const response = await axios.post(apiUrl, {
             model,
             messages: [{ role: 'user', content: prompt }],
             temperature: 0.3,
-            max_tokens: maxTokens
+            max_tokens: maxTokens,
+            stream: useStream
         }, {
             timeout,
+            responseType: useStream ? 'stream' : 'json',
             headers: {
                 'Authorization': `Bearer ${apiKey}`,
                 'Content-Type': 'application/json',
-                'Accept': 'application/json',
+                'Accept': useStream ? 'text/event-stream' : 'application/json',
                 // Certains fournisseurs (dont Groq, derrière Cloudflare) bloquent le
                 // User-Agent par défaut des clients HTTP, détecté comme un bot (HTTP 403).
                 'User-Agent': 'Mozilla/5.0 (compatible; APM/1.0)'
             }
         });
 
-        const choice = (response.data.choices || [])[0];
-        if (!choice) throw new Error(`Réponse ${providerLabel} vide (aucun choix retourné)`);
-        let content = choice.message.content;
-        if (choice.finish_reason === 'length') {
-            content += '\n\n⚠️ Réponse tronquée (limite de longueur atteinte).';
+        if (!useStream) {
+            const choice = (response.data.choices || [])[0];
+            if (!choice) throw new Error(`Réponse ${providerLabel} vide (aucun choix retourné)`);
+            let content = choice.message.content;
+            if (choice.finish_reason === 'length') {
+                content += '\n\n⚠️ Réponse tronquée (limite de longueur atteinte).';
+            }
+            return content;
         }
-        return content;
+
+        // Mode streaming : le corps est un flux de lignes "data: {...}\n\n" (format SSE
+        // standard OpenAI-compatible), terminé par une ligne "data: [DONE]".
+        return await new Promise((resolve, reject) => {
+            let full = '';
+            let buffer = '';
+            let finishReason = null;
+            let settled = false;
+
+            response.data.on('data', (chunk) => {
+                buffer += chunk.toString('utf8');
+                const lines = buffer.split('\n');
+                buffer = lines.pop(); // ligne potentiellement incomplète : conservée pour le prochain chunk
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed.startsWith('data:')) continue;
+                    const payload = trimmed.slice(5).trim();
+                    if (!payload || payload === '[DONE]') continue;
+                    try {
+                        const parsed = JSON.parse(payload);
+                        const delta = parsed.choices?.[0]?.delta?.content;
+                        if (delta) {
+                            full += delta;
+                            onChunk(delta, full);
+                        }
+                        if (parsed.choices?.[0]?.finish_reason) {
+                            finishReason = parsed.choices[0].finish_reason;
+                        }
+                    } catch (e) {
+                        // Ligne SSE non-JSON (garde-fou — ne devrait pas arriver) : ignorée.
+                    }
+                }
+            });
+            response.data.on('end', () => {
+                if (settled) return;
+                settled = true;
+                if (finishReason === 'length') {
+                    full += '\n\n⚠️ Réponse tronquée (limite de longueur atteinte).';
+                }
+                resolve(full);
+            });
+            response.data.on('error', (err) => {
+                if (settled) return;
+                settled = true;
+                reject(err);
+            });
+        });
     } catch (error) {
         if (error.response) {
-            const msg = error.response.data?.error?.message || JSON.stringify(error.response.data);
+            let msg;
+            if (error.response.data && typeof error.response.data.pipe === 'function') {
+                // Réponse d'erreur reçue en mode stream (responseType 'stream') : c'est un
+                // flux, pas du JSON déjà parsé — on le draine pour en tirer un message lisible.
+                try {
+                    const text = await streamToString(error.response.data);
+                    try { msg = JSON.parse(text)?.error?.message || text; } catch { msg = text; }
+                } catch { msg = `HTTP ${error.response.status}`; }
+            } else {
+                msg = error.response.data?.error?.message || JSON.stringify(error.response.data);
+            }
             throw new Error(`Erreur API ${providerLabel} (HTTP ${error.response.status}) : ${msg}`);
         }
         if (error.code === 'ECONNABORTED') {
@@ -81,27 +159,27 @@ async function callOpenAiCompatible(apiUrl, apiKey, model, prompt, timeout, prov
     }
 }
 
-async function callGroqChat(prompt, apiKey, model, timeout = 60000, maxTokens = DEFAULT_MAX_TOKENS) {
+async function callGroqChat(prompt, apiKey, model, timeout = 60000, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null) {
     if (!apiKey) throw new Error('Clé API Groq non configurée');
-    return callOpenAiCompatible(GROQ_API_URL, apiKey, model, prompt, timeout, 'Groq', maxTokens);
+    return callOpenAiCompatible(GROQ_API_URL, apiKey, model, prompt, timeout, 'Groq', maxTokens, onChunk);
 }
 
-async function callNvidiaChat(prompt, apiKey, model, timeout = 60000, maxTokens = DEFAULT_MAX_TOKENS) {
+async function callNvidiaChat(prompt, apiKey, model, timeout = 60000, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null) {
     if (!apiKey) throw new Error('Clé API NVIDIA non configurée');
-    return callOpenAiCompatible(NVIDIA_API_URL, apiKey, model, prompt, timeout, 'NVIDIA', maxTokens);
+    return callOpenAiCompatible(NVIDIA_API_URL, apiKey, model, prompt, timeout, 'NVIDIA', maxTokens, onChunk);
 }
 
-async function callOllamaChat(prompt, url, model, timeout = 120000, maxTokens = DEFAULT_MAX_TOKENS) {
+async function callOllamaChat(prompt, url, model, timeout = 120000, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null) {
     if (!url) throw new Error("URL de l'instance Ollama non configurée");
     const ollamaApiUrl = url.replace(/\/$/, '') + '/v1/chat/completions';
     // Ollama n'exige pas de clé API — un jeton factice suffit pour le header Authorization.
-    return callOpenAiCompatible(ollamaApiUrl, 'ollama', model, prompt, timeout, 'Ollama', maxTokens);
+    return callOpenAiCompatible(ollamaApiUrl, 'ollama', model, prompt, timeout, 'Ollama', maxTokens, onChunk);
 }
 
-async function callProviderChat(provider, prompt, settings, model, timeout, maxTokens = DEFAULT_MAX_TOKENS) {
-    if (provider === 'groq') return callGroqChat(prompt, settings.groq_api_key, model, timeout, maxTokens);
-    if (provider === 'nvidia') return callNvidiaChat(prompt, settings.nvidia_api_key, model, timeout, maxTokens);
-    if (provider === 'ollama') return callOllamaChat(prompt, settings.ollama_url, model, timeout, maxTokens);
+async function callProviderChat(provider, prompt, settings, model, timeout, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null) {
+    if (provider === 'groq') return callGroqChat(prompt, settings.groq_api_key, model, timeout, maxTokens, onChunk);
+    if (provider === 'nvidia') return callNvidiaChat(prompt, settings.nvidia_api_key, model, timeout, maxTokens, onChunk);
+    if (provider === 'ollama') return callOllamaChat(prompt, settings.ollama_url, model, timeout, maxTokens, onChunk);
     throw new Error(`Fournisseur inconnu : ${provider}`);
 }
 
@@ -204,12 +282,11 @@ async function testAllModels(db) {
 }
 
 /**
- * Interroge l'IA : essaie d'abord le modèle demandé (preferredModelId, optionnel), puis
- * bascule automatiquement sur le premier modèle actif de chaque autre fournisseur en cas
- * d'échec (panne, quota dépassé, clé invalide...). Port JS de run_ai_analysis (analyse-mail
- * app.py:3895).
+ * Détermine l'ordre des modèles à essayer (modèle demandé puis défaut puis premier actif de
+ * chaque autre fournisseur) et les paramètres de requête (timeout, max_tokens) — factorisé
+ * entre runAiQuery (synchrone) et startAiQueryAsync (asynchrone + progression).
  */
-async function runAiQuery(db, prompt, preferredModelId) {
+async function resolveQueryPlan(db, preferredModelId) {
     const settings = await db.get('SELECT * FROM ai_settings WHERE id = 1');
     const models = await getModelsWithStatus(db);
     const activeModels = models.filter(m => m.active);
@@ -249,6 +326,18 @@ async function runAiQuery(db, prompt, preferredModelId) {
         ? settings.max_tokens
         : DEFAULT_MAX_TOKENS;
 
+    return { settings, ordered, timeout, maxTokens };
+}
+
+/**
+ * Interroge l'IA : essaie d'abord le modèle demandé (preferredModelId, optionnel), puis
+ * bascule automatiquement sur le premier modèle actif de chaque autre fournisseur en cas
+ * d'échec (panne, quota dépassé, clé invalide...). Port JS de run_ai_analysis (analyse-mail
+ * app.py:3895).
+ */
+async function runAiQuery(db, prompt, preferredModelId) {
+    const { settings, ordered, timeout, maxTokens } = await resolveQueryPlan(db, preferredModelId);
+
     const errors = [];
     for (const m of ordered) {
         try {
@@ -259,6 +348,84 @@ async function runAiQuery(db, prompt, preferredModelId) {
         }
     }
     throw new Error(`Tous les modèles IA configurés ont échoué. ${errors.join(' | ')}`);
+}
+
+// Jobs de requêtes IA asynchrones (startAiQueryAsync) — permet à un appelant externe (ex.
+// AppDSI) de suivre une génération en temps réel (tokensReceived augmente au fil du flux SSE
+// fournisseur) au lieu d'attendre la réponse complète comme /api/v1/ai/query. En mémoire,
+// comme les jobs équivalents côté AppDSI (contratAiJobs, summarizeJobs) — perdus si l'APM
+// redémarre en cours de génération, ce qui reste rare et sans conséquence grave (l'appelant
+// relance simplement).
+let queryJobs = {};
+
+/** Purge les jobs terminés/en échec de plus de 35 min — évite la fuite mémoire. */
+function pruneQueryJobs() {
+    const cutoff = Date.now() - 35 * 60 * 1000;
+    for (const key of Object.keys(queryJobs)) {
+        if (queryJobs[key].createdAt < cutoff) delete queryJobs[key];
+    }
+}
+
+/**
+ * Variante asynchrone de runAiQuery : démarre la génération en tâche de fond et renvoie
+ * immédiatement un queryId. La progression est consultable via getQueryJobStatus —
+ * tokensReceived (estimation ~4 caractères/token, faute de tokenizer exact ici) augmente en
+ * temps réel pendant status='running' grâce au streaming SSE de callOpenAiCompatible.
+ * Comme runAiQuery, bascule vers le fournisseur actif suivant en cas d'échec — mais
+ * uniquement avant qu'un flux n'ait commencé à produire du texte (une fois des caractères
+ * reçus, on ne rejoue pas le prompt sur un autre fournisseur pour ne pas produire une
+ * réponse incohérente à mi-chemin).
+ */
+function startAiQueryAsync(db, prompt, preferredModelId) {
+    const queryId = `q_${Date.now()}_${Math.round(Math.random() * 1e6)}`;
+    queryJobs[queryId] = { status: 'running', tokensReceived: 0, charsReceived: 0, createdAt: Date.now() };
+    pruneQueryJobs();
+
+    (async () => {
+        const job = queryJobs[queryId];
+        try {
+            const { settings, ordered, timeout, maxTokens } = await resolveQueryPlan(db, preferredModelId);
+            const errors = [];
+            let succeeded = false;
+
+            for (const m of ordered) {
+                if (job.charsReceived > 0) break; // un flux a déjà démarré : pas de bascule fournisseur en cours de route
+                try {
+                    const onChunk = (delta, fullSoFar) => {
+                        job.charsReceived = fullSoFar.length;
+                        job.tokensReceived = Math.round(job.charsReceived / 4);
+                        job.provider = m.provider;
+                        job.provider_label = m.provider_label;
+                        job.model = m.model;
+                    };
+                    const response = await callProviderChat(m.provider, prompt, settings, m.model, timeout, maxTokens, onChunk);
+                    job.status = 'completed';
+                    job.response = response;
+                    job.provider = m.provider;
+                    job.provider_label = m.provider_label;
+                    job.model = m.model;
+                    job.model_name = m.name;
+                    succeeded = true;
+                    break;
+                } catch (error) {
+                    errors.push(`${m.provider_label} (${m.model}) : ${error.message}`);
+                }
+            }
+            if (!succeeded) {
+                job.status = 'error';
+                job.error = `Tous les modèles IA configurés ont échoué. ${errors.join(' | ')}`;
+            }
+        } catch (error) {
+            job.status = 'error';
+            job.error = error.message;
+        }
+    })();
+
+    return queryId;
+}
+
+function getQueryJobStatus(queryId) {
+    return queryJobs[queryId] || null;
 }
 
 module.exports = (app, db, authenticateAdmin) => {
@@ -425,5 +592,7 @@ module.exports = (app, db, authenticateAdmin) => {
     // planifié horaire) sans dépendance circulaire — même pattern que app.locals.sendMail.
     app.locals.getAiModelsWithStatus = () => getModelsWithStatus(db);
     app.locals.runAiQuery = (prompt, preferredModelId) => runAiQuery(db, prompt, preferredModelId);
+    app.locals.startAiQueryAsync = (prompt, preferredModelId) => startAiQueryAsync(db, prompt, preferredModelId);
+    app.locals.getQueryJobStatus = (queryId) => getQueryJobStatus(queryId);
     app.locals.testAllModels = () => testAllModels(db);
 };
