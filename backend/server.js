@@ -13,6 +13,18 @@ const app = express();
 const PORT = 8001;
 const SECRET_KEY = 'votre_cle_secrete_ici'; // À sécuriser via .env plus tard
 
+// Filet de sécurité global : sans ça, une seule promesse rejetée non gérée n'importe où dans
+// l'appli (ex. un événement 'error' de flux SSE émis en dehors du executor de la Promise qui
+// l'attend) fait planter TOUT le process Node (comportement par défaut depuis Node 15) — ce qui
+// coupe l'accès à l'APM pour toutes les applications qui en dépendent (AppDSI, etc.), pas
+// seulement la requête fautive. On journalise et on continue plutôt que de crasher.
+process.on('unhandledRejection', (reason) => {
+    console.error('[UNHANDLED REJECTION]', reason);
+});
+process.on('uncaughtException', (err) => {
+    console.error('[UNCAUGHT EXCEPTION]', err);
+});
+
 // Swagger Configuration
 const swaggerOptions = {
     definition: {
