@@ -38,6 +38,14 @@ const DEFAULT_MAX_TOKENS = 16000;
 // modèle répond sans consommer inutilement de quota.
 const HEALTH_CHECK_PROMPT = 'Réponds uniquement par : OK';
 
+// Délai avant de déclarer un modèle "down" au test de santé — le TTFT (time to first token)
+// d'Ollama (modèles internes, sur matériel dédié — souvent un gros modèle chargé à froid) et de
+// NVIDIA NIM peut largement dépasser le défaut Groq (cloud, TTFT rapide) : un timeout trop court
+// déclare à tort un modèle "down" alors qu'il ne s'agit que de latence, ce qui le retire des
+// sélecteurs de modèle des applications clientes (cf. /api/v1/ai/models, filtré côté AppDSI sur
+// le flag actif). 2 min pour ollama/nvidia, 20s pour groq (déjà rapide en pratique).
+const HEALTH_CHECK_TIMEOUT_MS = { ollama: 120000, nvidia: 120000, groq: 20000 };
+
 /** Draine un flux Node en texte — utilisé pour lire le corps d'une réponse d'erreur reçue
  * en mode streaming (responseType 'stream'), afin d'en extraire un message exploitable. */
 function streamToString(stream) {
@@ -239,7 +247,7 @@ async function getModelsWithStatus(db) {
  * Envoie le prompt de test à un modèle et enregistre le résultat dans ai_model_status.
  * Utilisé par le bouton "Tester" (test-model, test-all) et par le job planifié horaire.
  */
-async function testModel(db, model, settings, timeout = 20000) {
+async function testModel(db, model, settings, timeout = HEALTH_CHECK_TIMEOUT_MS[model.provider] || 20000) {
     const start = Date.now();
     try {
         const reply = await callProviderChat(model.provider, HEALTH_CHECK_PROMPT, settings, model.model, timeout);
