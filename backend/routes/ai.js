@@ -10,11 +10,18 @@ const axios = require('axios');
  *     /api/v1/ai/* (Proxy APIs) pour l'interrogation externe.
  */
 
-// URLs des API compatibles OpenAI. NVIDIA NIM dispose d'un très grand catalogue de modèles
-// en évolution constante (pas de liste figée) : l'admin saisit librement l'identifiant du
-// modèle de son choix, comme dans analyse-mail.
+// URLs des API compatibles OpenAI.
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const NVIDIA_API_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
+
+// Endpoints de listage des modèles disponibles côté fournisseur (catalogue), distincts des
+// endpoints de complétion ci-dessus — utilisés par GET /models/catalog pour proposer à l'admin
+// les modèles réellement accessibles avec sa clé/instance plutôt qu'une saisie libre à l'aveugle.
+// NVIDIA NIM dispose d'un très grand catalogue en évolution constante : la liste renvoyée par
+// /v1/models reste néanmoins la source la plus fiable (à jour), contrairement à une liste figée
+// codée en dur ici.
+const GROQ_MODELS_URL = 'https://api.groq.com/openai/v1/models';
+const NVIDIA_MODELS_URL = 'https://integrate.api.nvidia.com/v1/models';
 
 const PROVIDER_LABELS = { groq: 'Groq', nvidia: 'NVIDIA', ollama: 'Ollama' };
 
@@ -196,6 +203,83 @@ function providerActive(provider, settings) {
     if (provider === 'nvidia') return !!settings.nvidia_api_key;
     if (provider === 'ollama') return !!settings.ollama_enabled && !!settings.ollama_url;
     return false;
+}
+
+/** Transforme une erreur axios en erreur lisible pour l'admin — même logique que le bloc
+ * catch de callOpenAiCompatible, mais pour un GET simple (pas de réponse en streaming). */
+function providerListError(error, providerLabel) {
+    if (error.response) {
+        const msg = error.response.data?.error?.message || JSON.stringify(error.response.data);
+        return new Error(`Erreur API ${providerLabel} (HTTP ${error.response.status}) : ${msg}`);
+    }
+    if (error.code === 'ECONNABORTED') return new Error(`Délai dépassé en contactant l'API ${providerLabel}`);
+    return new Error(`Erreur réseau vers l'API ${providerLabel} : ${error.message}`);
+}
+
+async function listGroqModels(apiKey) {
+    if (!apiKey) throw new Error('Clé API Groq non configurée');
+    try {
+        const response = await axios.get(GROQ_MODELS_URL, {
+            timeout: 20000,
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'User-Agent': 'Mozilla/5.0 (compatible; APM/1.0)'
+            }
+        });
+        return (response.data.data || []).map(m => ({
+            id: m.id,
+            context_length: m.context_window || null,
+            owned_by: m.owned_by || null
+        }));
+    } catch (error) {
+        throw providerListError(error, 'Groq');
+    }
+}
+
+async function listNvidiaModels(apiKey) {
+    if (!apiKey) throw new Error('Clé API NVIDIA non configurée');
+    try {
+        const response = await axios.get(NVIDIA_MODELS_URL, {
+            timeout: 20000,
+            headers: { 'Authorization': `Bearer ${apiKey}` }
+        });
+        return (response.data.data || []).map(m => ({
+            id: m.id,
+            owned_by: m.owned_by || null
+        }));
+    } catch (error) {
+        throw providerListError(error, 'NVIDIA');
+    }
+}
+
+async function listOllamaModels(url) {
+    if (!url) throw new Error("URL de l'instance Ollama non configurée");
+    // /api/tags (natif Ollama) plutôt que /v1/models (compatible OpenAI) : renvoie les
+    // caractéristiques des modèles installés localement (taille, famille, quantization),
+    // absentes de l'endpoint OpenAI-compatible.
+    const tagsUrl = url.replace(/\/$/, '') + '/api/tags';
+    try {
+        const response = await axios.get(tagsUrl, { timeout: 20000 });
+        return (response.data.models || []).map(m => ({
+            id: m.model || m.name,
+            size: m.size || null,
+            parameter_size: m.details?.parameter_size || null,
+            quantization: m.details?.quantization_level || null,
+            family: m.details?.family || null
+        }));
+    } catch (error) {
+        throw providerListError(error, 'Ollama');
+    }
+}
+
+/** Interroge le fournisseur pour lister ses modèles disponibles (catalogue), à distinguer de
+ * getModelsWithStatus qui liste les modèles déjà enregistrés en base. `settings` peut contenir
+ * une clé/URL tout juste saisie dans le formulaire (pas encore sauvegardée) — cf. GET /models/catalog. */
+async function listProviderModels(provider, settings) {
+    if (provider === 'groq') return listGroqModels(settings.groq_api_key);
+    if (provider === 'nvidia') return listNvidiaModels(settings.nvidia_api_key);
+    if (provider === 'ollama') return listOllamaModels(settings.ollama_url);
+    throw new Error(`Fournisseur inconnu : ${provider}`);
 }
 
 /**
@@ -504,6 +588,40 @@ module.exports = (app, db, authenticateAdmin) => {
             res.json(await getModelsWithStatus(db));
         } catch (error) {
             res.status(500).json({ error: error.message });
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/ai/models/catalog:
+     *   get:
+     *     tags: [AI]
+     *     summary: Interroge l'API du fournisseur pour lister ses modèles disponibles (catalogue)
+     *     description: >
+     *       À la différence de GET /models (modèles déjà enregistrés en base), cette route
+     *       interroge en direct l'API du fournisseur pour proposer les modèles réellement
+     *       accessibles avec la clé/instance configurée, avec leurs caractéristiques
+     *       (contexte, taille, quantization…) — utile au moment d'ajouter un modèle plutôt que
+     *       de saisir à l'aveugle son identifiant technique.
+     */
+    router.get('/models/catalog', authenticateAdmin, async (req, res) => {
+        const { provider } = req.query;
+        if (!['groq', 'nvidia', 'ollama'].includes(provider)) {
+            return res.status(400).json({ error: 'Fournisseur inconnu' });
+        }
+        try {
+            const settings = await db.get('SELECT * FROM ai_settings WHERE id = 1') || {};
+            // Permet d'interroger le catalogue avec une clé/URL tout juste saisie dans le
+            // formulaire de paramétrage, sans devoir d'abord cliquer sur "Sauvegarder".
+            const effective = {
+                groq_api_key: req.query.api_key || settings.groq_api_key,
+                nvidia_api_key: req.query.api_key || settings.nvidia_api_key,
+                ollama_url: req.query.url || settings.ollama_url
+            };
+            res.json(await listProviderModels(provider, effective));
+        } catch (error) {
+            // 502 (Bad Gateway) plutôt que 500 : l'erreur vient de l'API distante, pas d'un bug serveur.
+            res.status(502).json({ error: error.message });
         }
     });
 

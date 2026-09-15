@@ -10,7 +10,8 @@ import {
     XCircle,
     HelpCircle,
     RefreshCw,
-    Zap
+    Zap,
+    Search
 } from 'lucide-react';
 import { API_BASE_URL } from '../config';
 
@@ -49,6 +50,16 @@ const PROVIDER_OPTIONS = [
     { id: 'nvidia', label: 'NVIDIA NIM' },
     { id: 'ollama', label: 'Ollama' }
 ];
+
+interface CatalogModel {
+    id: string;
+    context_length?: number | null;
+    owned_by?: string | null;
+    size?: number | null;
+    parameter_size?: string | null;
+    quantization?: string | null;
+    family?: string | null;
+}
 
 const StatusBadge: React.FC<{ lastTest: AiModel['last_test'] }> = ({ lastTest }) => {
     const title = lastTest.tested_at
@@ -93,6 +104,9 @@ const AISettings: React.FC = () => {
     const [testingId, setTestingId] = useState<number | null>(null);
     const [newModel, setNewModel] = useState({ provider: 'groq', name: '', model: '' });
     const [adding, setAdding] = useState(false);
+    const [catalog, setCatalog] = useState<CatalogModel[] | null>(null);
+    const [catalogLoading, setCatalogLoading] = useState(false);
+    const [catalogError, setCatalogError] = useState<string | null>(null);
 
     const load = async () => {
         try {
@@ -137,6 +151,26 @@ const AISettings: React.FC = () => {
             alert('Erreur lors de l\'ajout : ' + (err.response?.data?.error || err.message));
         } finally {
             setAdding(false);
+        }
+    };
+
+    const handleFetchCatalog = async () => {
+        setCatalogLoading(true);
+        setCatalogError(null);
+        setCatalog(null);
+        try {
+            // Envoie la clé/URL telle que saisie à l'écran (même non sauvegardée) : évite
+            // d'obliger l'admin à cliquer sur "Sauvegarder" avant de pouvoir lister les modèles.
+            const params: Record<string, string> = { provider: newModel.provider };
+            if (newModel.provider === 'groq') params.api_key = settings.groq_api_key || '';
+            if (newModel.provider === 'nvidia') params.api_key = settings.nvidia_api_key || '';
+            if (newModel.provider === 'ollama') params.url = settings.ollama_url || '';
+            const res = await axios.get(`${API_BASE}/models/catalog`, { params });
+            setCatalog(res.data);
+        } catch (err: any) {
+            setCatalogError(err.response?.data?.error || err.message);
+        } finally {
+            setCatalogLoading(false);
         }
     };
 
@@ -400,7 +434,11 @@ const AISettings: React.FC = () => {
                         <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Fournisseur</label>
                         <select
                             value={newModel.provider}
-                            onChange={e => setNewModel({ ...newModel, provider: e.target.value })}
+                            onChange={e => {
+                                setNewModel({ ...newModel, provider: e.target.value });
+                                setCatalog(null);
+                                setCatalogError(null);
+                            }}
                             className="bg-white border border-slate-200 rounded-xl py-2.5 px-4 outline-none focus:border-blue-500 font-bold text-sm"
                         >
                             {PROVIDER_OPTIONS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
@@ -427,6 +465,16 @@ const AISettings: React.FC = () => {
                         />
                     </div>
                     <button
+                        type="button"
+                        onClick={handleFetchCatalog}
+                        disabled={catalogLoading}
+                        title="Interroger l'API du fournisseur pour lister les modèles disponibles"
+                        className="flex items-center gap-2 bg-white border border-slate-200 hover:border-blue-400 text-slate-600 hover:text-blue-600 px-5 py-2.5 rounded-xl font-black text-sm transition-all active:scale-95"
+                    >
+                        {catalogLoading ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
+                        <span>MODÈLES DISPO</span>
+                    </button>
+                    <button
                         type="submit"
                         disabled={adding}
                         className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-xl font-black text-sm transition-all active:scale-95"
@@ -434,6 +482,43 @@ const AISettings: React.FC = () => {
                         {adding ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
                         <span>AJOUTER</span>
                     </button>
+
+                    {catalogError && (
+                        <p className="w-full basis-full text-xs font-bold text-rose-600 ml-1">{catalogError}</p>
+                    )}
+
+                    {catalog && (
+                        <div className="w-full basis-full space-y-2">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">
+                                {catalog.length > 0
+                                    ? `${catalog.length} modèle(s) disponible(s) chez ${PROVIDER_OPTIONS.find(p => p.id === newModel.provider)?.label} — cliquez pour choisir`
+                                    : 'Aucun modèle retourné par le fournisseur'}
+                            </label>
+                            <div className="flex flex-wrap gap-2 max-h-56 overflow-y-auto p-1">
+                                {catalog.map(m => {
+                                    const meta = [
+                                        m.context_length ? `contexte ${m.context_length.toLocaleString()}` : null,
+                                        m.parameter_size ? `${m.parameter_size} params` : null,
+                                        m.quantization || null,
+                                        m.family || null,
+                                        m.size ? `${(m.size / 1e9).toFixed(1)} Go` : null,
+                                        m.owned_by || null
+                                    ].filter(Boolean).join(' · ');
+                                    return (
+                                        <button
+                                            key={m.id}
+                                            type="button"
+                                            onClick={() => setNewModel({ ...newModel, model: m.id, name: newModel.name || m.id })}
+                                            className={`text-left px-3 py-2 rounded-xl border transition-all ${newModel.model === m.id ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-white hover:border-blue-300'}`}
+                                        >
+                                            <div className="font-mono text-xs font-bold text-slate-700">{m.id}</div>
+                                            {meta && <div className="text-[10px] text-slate-400 font-medium mt-0.5">{meta}</div>}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
                 </form>
             </div>
         </div>
