@@ -5,9 +5,10 @@ const axios = require('axios');
  * @openapi
  * tags:
  *   name: AI
- *   description: Paramétrage des fournisseurs IA (Groq, NVIDIA NIM, Ollama) — mêmes fournisseurs
- *     et mêmes paramètres que l'outil analyse-mail. Voir aussi les routes publiques
- *     /api/v1/ai/* (Proxy APIs) pour l'interrogation externe.
+ *   description: Paramétrage des fournisseurs IA (Groq, NVIDIA NIM, Ollama, et les
+ *     fournisseurs LOCAUX vLLM Qwen3-Omni « multimodal » et Faster-Whisper « transcription
+ *     audio ») — mêmes fournisseurs et mêmes paramètres que l'outil analyse-mail. Voir aussi
+ *     les routes publiques /api/v1/ai/* (Proxy APIs) pour l'interrogation externe.
  */
 
 // URLs des API compatibles OpenAI.
@@ -23,7 +24,59 @@ const NVIDIA_API_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
 const GROQ_MODELS_URL = 'https://api.groq.com/openai/v1/models';
 const NVIDIA_MODELS_URL = 'https://integrate.api.nvidia.com/v1/models';
 
-const PROVIDER_LABELS = { groq: 'Groq', nvidia: 'NVIDIA', ollama: 'Ollama' };
+// Fournisseurs IA LOCAUX (hébergés sur le réseau interne) — à distinguer des fournisseurs
+// cloud (Groq, NVIDIA NIM) : pas de quota ni de coût externe, mais disponibilité et latence
+// dépendant de l'infrastructure locale.
+//   - vLLM sert Qwen3-Omni, un LLM multimodal (texte/image/audio) exposé via une API
+//     compatible OpenAI ; il participe donc au flux de chat normal (bascule fournisseur).
+//   - Faster-Whisper est spécialisé dans la transcription audio (STT) ; il ne répond pas aux
+//     prompts de chat mais alimente la route dédiée POST /api/v1/ai/transcribe.
+// Valeurs par défaut (préremplies par db.js, modifiables dans le Paramétrage IA via
+// PUT /api/ai/settings) : vLLM http://10.103.130.166:8090/v1, Faster-Whisper
+// http://10.103.130.166:8091/v1.
+const LOCAL_DUMMY_API_KEY = 'EMPTY';
+
+const PROVIDER_LABELS = {
+    groq: 'Groq',
+    nvidia: 'NVIDIA NIM',
+    ollama: 'Ollama',
+    vllm: 'vLLM Qwen3-Omni (local)',
+    whisper: 'Faster-Whisper STT (local)'
+};
+
+// Capacités par fournisseur : un fournisseur « chat » répond à /api/v1/ai/query, un
+// fournisseur « transcription » alimente /api/v1/ai/transcribe. Exposé dans /api/v1/ai/models
+// pour que les applications clientes choisissent le bon modèle selon l'usage.
+const PROVIDER_CAPABILITIES = {
+    groq: ['chat'],
+    nvidia: ['chat'],
+    ollama: ['chat'],
+    vllm: ['chat'],
+    whisper: ['transcription']
+};
+
+// Fournisseurs hébergés localement (réseau interne) — exposé par /api/v1/ai/models via le
+// booléen `local`, pour que les applications clientes sachent qu'il s'agit d'IA locales.
+const LOCAL_PROVIDERS = new Set(['vllm', 'whisper']);
+
+// Fournisseurs configurables (paramétrage + ajout de modèles + catalogue).
+const KNOWN_PROVIDERS = ['groq', 'nvidia', 'ollama', 'vllm', 'whisper'];
+
+/** Un fournisseur peut-il répondre à une requête de chat ? (Whisper en est exclu : STT pur.) */
+function isChatProvider(provider) {
+    return (PROVIDER_CAPABILITIES[provider] || []).includes('chat');
+}
+
+/**
+ * Normalise une URL d'API compatible OpenAI : garantit le suffixe /v1. Accepte aussi bien
+ * une Base URL fournie sans /v1 (ex. « http://hôte:8090 ») qu'avec (ex. la Base URL vLLM /
+ * Faster-Whisper « http://hôte:8090/v1 ») — évite les doublons « /v1/v1 ».
+ */
+function normalizeApiBase(url) {
+    let base = String(url || '').trim().replace(/\/+$/, '');
+    if (base && !/\/v\d+$/.test(base)) base += '/v1';
+    return base;
+}
 
 // Délai d'attente par défaut pour /api/v1/ai/query (runAiQuery), quand
 // ai_settings.query_timeout_ms n'est pas configuré. Volontairement plus large
@@ -50,8 +103,10 @@ const HEALTH_CHECK_PROMPT = 'Réponds uniquement par : OK';
 // NVIDIA NIM peut largement dépasser le défaut Groq (cloud, TTFT rapide) : un timeout trop court
 // déclare à tort un modèle "down" alors qu'il ne s'agit que de latence, ce qui le retire des
 // sélecteurs de modèle des applications clientes (cf. /api/v1/ai/models, filtré côté AppDSI sur
-// le flag actif). 2 min pour ollama/nvidia, 20s pour groq (déjà rapide en pratique).
-const HEALTH_CHECK_TIMEOUT_MS = { ollama: 120000, nvidia: 120000, groq: 20000 };
+// le flag actif). 2 min pour les fournisseurs locaux (ollama/vllm) et nvidia, 20s pour groq
+// (déjà rapide en pratique). Whisper ne fait pas de génération : son test est un simple appel
+// de catalogue, donc un délai court suffit.
+const HEALTH_CHECK_TIMEOUT_MS = { ollama: 120000, nvidia: 120000, groq: 20000, vllm: 120000, whisper: 20000 };
 
 /** Draine un flux Node en texte — utilisé pour lire le corps d'une réponse d'erreur reçue
  * en mode streaming (responseType 'stream'), afin d'en extraire un message exploitable. */
@@ -191,10 +246,21 @@ async function callOllamaChat(prompt, url, model, timeout = 120000, maxTokens = 
     return callOpenAiCompatible(ollamaApiUrl, 'ollama', model, prompt, timeout, 'Ollama', maxTokens, onChunk);
 }
 
+async function callVllmChat(prompt, url, model, timeout = 120000, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null) {
+    if (!url) throw new Error("URL de l'instance vLLM (Qwen3-Omni) non configurée");
+    const vllmApiUrl = normalizeApiBase(url) + '/chat/completions';
+    // vLLM n'exige pas de clé API par défaut — jeton factice 'EMPTY' (cf. LOCAL_DUMMY_API_KEY).
+    return callOpenAiCompatible(vllmApiUrl, LOCAL_DUMMY_API_KEY, model, prompt, timeout, 'vLLM (local)', maxTokens, onChunk);
+}
+
 async function callProviderChat(provider, prompt, settings, model, timeout, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null) {
     if (provider === 'groq') return callGroqChat(prompt, settings.groq_api_key, model, timeout, maxTokens, onChunk);
     if (provider === 'nvidia') return callNvidiaChat(prompt, settings.nvidia_api_key, model, timeout, maxTokens, onChunk);
     if (provider === 'ollama') return callOllamaChat(prompt, settings.ollama_url, model, timeout, maxTokens, onChunk);
+    if (provider === 'vllm') return callVllmChat(prompt, settings.vllm_url, model, timeout, maxTokens, onChunk);
+    if (provider === 'whisper') {
+        throw new Error("Faster-Whisper est un modèle de transcription audio (STT) : utilisez /api/v1/ai/transcribe");
+    }
     throw new Error(`Fournisseur inconnu : ${provider}`);
 }
 
@@ -202,6 +268,8 @@ function providerActive(provider, settings) {
     if (provider === 'groq') return !!settings.groq_api_key;
     if (provider === 'nvidia') return !!settings.nvidia_api_key;
     if (provider === 'ollama') return !!settings.ollama_enabled && !!settings.ollama_url;
+    if (provider === 'vllm') return !!settings.vllm_enabled && !!settings.vllm_url;
+    if (provider === 'whisper') return !!settings.whisper_enabled && !!settings.whisper_url;
     return false;
 }
 
@@ -272,6 +340,37 @@ async function listOllamaModels(url) {
     }
 }
 
+/** Catalogue d'un fournisseur local compatible OpenAI (vLLM, Faster-Whisper) : GET /v1/models.
+ * vLLM y expose notamment `max_model_len` (fenêtre de contexte), remonté en `context_length`. */
+async function listOpenAiCompatibleModels(url, providerLabel) {
+    if (!url) throw new Error(`URL de l'instance ${providerLabel} non configurée`);
+    const modelsUrl = normalizeApiBase(url) + '/models';
+    try {
+        const response = await axios.get(modelsUrl, {
+            timeout: 20000,
+            headers: {
+                'Authorization': `Bearer ${LOCAL_DUMMY_API_KEY}`,
+                'User-Agent': 'Mozilla/5.0 (compatible; APM/1.0)'
+            }
+        });
+        return (response.data.data || []).map(m => ({
+            id: m.id,
+            context_length: m.max_model_len || m.context_length || null,
+            owned_by: m.owned_by || null
+        }));
+    } catch (error) {
+        throw providerListError(error, providerLabel);
+    }
+}
+
+async function listVllmModels(url) {
+    return listOpenAiCompatibleModels(url, 'vLLM');
+}
+
+async function listWhisperModels(url) {
+    return listOpenAiCompatibleModels(url, 'Faster-Whisper');
+}
+
 /** Interroge le fournisseur pour lister ses modèles disponibles (catalogue), à distinguer de
  * getModelsWithStatus qui liste les modèles déjà enregistrés en base. `settings` peut contenir
  * une clé/URL tout juste saisie dans le formulaire (pas encore sauvegardée) — cf. GET /models/catalog. */
@@ -279,7 +378,49 @@ async function listProviderModels(provider, settings) {
     if (provider === 'groq') return listGroqModels(settings.groq_api_key);
     if (provider === 'nvidia') return listNvidiaModels(settings.nvidia_api_key);
     if (provider === 'ollama') return listOllamaModels(settings.ollama_url);
+    if (provider === 'vllm') return listVllmModels(settings.vllm_url);
+    if (provider === 'whisper') return listWhisperModels(settings.whisper_url);
     throw new Error(`Fournisseur inconnu : ${provider}`);
+}
+
+/**
+ * Transcrit un fichier audio via Faster-Whisper (API compatible OpenAI
+ * POST /v1/audio/transcriptions). `audio` peut être un Buffer (upload multipart) ou une
+ * chaîne base64 (appel JSON, ex. depuis une autre application). Renvoie { text, raw }.
+ */
+async function transcribeAudio(settings, audio, { filename = 'audio.wav', language = null, prompt = null, model = 'whisper-1' } = {}) {
+    const url = settings.whisper_url;
+    if (!settings.whisper_enabled) throw new Error('Faster-Whisper (transcription audio) est désactivé');
+    if (!url) throw new Error("URL de l'instance Faster-Whisper non configurée");
+    if (!audio) throw new Error('Fichier audio manquant');
+
+    const buffer = Buffer.isBuffer(audio) ? audio : Buffer.from(String(audio), 'base64');
+    if (!buffer.length) throw new Error('Fichier audio vide');
+
+    // API compatible OpenAI : multipart/form-data avec le champ "file". Node 18+ fournit
+    // FormData/Blob globalement (pas de dépendance supplémentaire ici).
+    const form = new FormData();
+    form.append('file', new Blob([buffer]), filename || 'audio.wav');
+    form.append('model', model || 'whisper-1');
+    form.append('response_format', 'json');
+    if (language) form.append('language', language);
+    if (prompt) form.append('prompt', prompt);
+
+    const endpoint = normalizeApiBase(url) + '/audio/transcriptions';
+    try {
+        const response = await axios.post(endpoint, form, {
+            // La transcription d'un long enregistrement peut être lente : délai large.
+            timeout: 300000,
+            headers: { 'Authorization': `Bearer ${LOCAL_DUMMY_API_KEY}` },
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity
+        });
+        const data = response.data;
+        const text = typeof data === 'string' ? data : (data?.text ?? '');
+        return { text: String(text || ''), raw: data };
+    } catch (error) {
+        throw providerListError(error, 'Faster-Whisper');
+    }
 }
 
 /**
@@ -305,6 +446,11 @@ async function getModelsWithStatus(db) {
             key: `${row.provider}:${row.id}`,
             provider: row.provider,
             provider_label: PROVIDER_LABELS[row.provider] || row.provider,
+            // IA locale (réseau interne) plutôt que fournisseur cloud — permet aux
+            // applications clientes d'indiquer clairement l'origine du modèle.
+            local: LOCAL_PROVIDERS.has(row.provider),
+            // Usages possibles : 'chat' (interrogation texte) et/ou 'transcription' (audio).
+            capabilities: PROVIDER_CAPABILITIES[row.provider] || ['chat'],
             name: row.name,
             model: row.model,
             is_active: !!row.is_active,
@@ -319,8 +465,10 @@ async function getModelsWithStatus(db) {
         };
     });
 
+    // Défaut implicite : premier modèle actif capable de chat (on ne veut pas qu'un modèle
+    // de transcription seul, ex. Faster-Whisper, devienne le défaut du flux /ai/query).
     if (!models.some(m => m.is_default)) {
-        const firstActive = models.find(m => m.active);
+        const firstActive = models.find(m => m.active && isChatProvider(m.provider));
         if (firstActive) firstActive.is_default = true;
     }
 
@@ -334,7 +482,15 @@ async function getModelsWithStatus(db) {
 async function testModel(db, model, settings, timeout = HEALTH_CHECK_TIMEOUT_MS[model.provider] || 20000) {
     const start = Date.now();
     try {
-        const reply = await callProviderChat(model.provider, HEALTH_CHECK_PROMPT, settings, model.model, timeout);
+        let reply;
+        if (model.provider === 'whisper') {
+            // Faster-Whisper ne répond pas aux prompts de chat : on vérifie la disponibilité du
+            // service via son catalogue de modèles (/v1/models), comme le ferait l'écran.
+            const list = await listWhisperModels(settings.whisper_url);
+            reply = `service STT joignable (${list.length} modèle(s) exposé(s))`;
+        } else {
+            reply = await callProviderChat(model.provider, HEALTH_CHECK_PROMPT, settings, model.model, timeout);
+        }
         const latency = Date.now() - start;
         await db.run(
             `INSERT INTO ai_model_status (model_id, status, message, latency_ms, tested_at)
@@ -381,9 +537,11 @@ async function testAllModels(db) {
 async function resolveQueryPlan(db, preferredModelId) {
     const settings = await db.get('SELECT * FROM ai_settings WHERE id = 1');
     const models = await getModelsWithStatus(db);
-    const activeModels = models.filter(m => m.active);
+    // Seuls les modèles capables de chat participent au flux /ai/query — Faster-Whisper
+    // (transcription audio) en est exclu : il alimente /api/v1/ai/transcribe.
+    const activeModels = models.filter(m => m.active && isChatProvider(m.provider));
     if (activeModels.length === 0) {
-        throw new Error('Aucun fournisseur IA configuré (Groq, NVIDIA ou Ollama)');
+        throw new Error('Aucun fournisseur IA de chat configuré (Groq, NVIDIA, Ollama ou vLLM local)');
     }
 
     const ordered = [];
@@ -405,7 +563,9 @@ async function resolveQueryPlan(db, preferredModelId) {
         const def = activeModels.find(m => m.is_default);
         if (def) { ordered.push(def); seenProviders.add(def.provider); }
     }
-    for (const provider of ['groq', 'nvidia', 'ollama']) {
+    // Bascule fournisseur dans l'ordre : cloud d'abord (rapides), puis local (vLLM).
+    // Faster-Whisper est volontairement absent (STT, pas de chat).
+    for (const provider of ['groq', 'nvidia', 'ollama', 'vllm']) {
         if (seenProviders.has(provider)) continue;
         const candidate = activeModels.find(m => m.provider === provider);
         if (candidate) { ordered.push(candidate); seenProviders.add(provider); }
@@ -551,7 +711,11 @@ module.exports = (app, db, authenticateAdmin) => {
      *     summary: Met à jour le paramétrage IA
      */
     router.put('/settings', authenticateAdmin, async (req, res) => {
-        const { groq_api_key, nvidia_api_key, ollama_url, ollama_enabled, default_model_id, query_timeout_ms, max_tokens } = req.body;
+        const {
+            groq_api_key, nvidia_api_key, ollama_url, ollama_enabled,
+            vllm_url, vllm_enabled, whisper_url, whisper_enabled,
+            default_model_id, query_timeout_ms, max_tokens
+        } = req.body;
         try {
             let timeout = parseInt(query_timeout_ms, 10);
             if (!Number.isFinite(timeout) || timeout <= 0) timeout = DEFAULT_QUERY_TIMEOUT_MS;
@@ -567,8 +731,13 @@ module.exports = (app, db, authenticateAdmin) => {
 
             await db.run(
                 `UPDATE ai_settings SET groq_api_key = ?, nvidia_api_key = ?, ollama_url = ?,
-                    ollama_enabled = ?, default_model_id = ?, query_timeout_ms = ?, max_tokens = ? WHERE id = 1`,
-                [groq_api_key || '', nvidia_api_key || '', ollama_url || '', ollama_enabled ? 1 : 0, default_model_id || null, timeout, maxTokens]
+                    ollama_enabled = ?, vllm_url = ?, vllm_enabled = ?, whisper_url = ?,
+                    whisper_enabled = ?, default_model_id = ?, query_timeout_ms = ?, max_tokens = ? WHERE id = 1`,
+                [
+                    groq_api_key || '', nvidia_api_key || '', ollama_url || '', ollama_enabled ? 1 : 0,
+                    vllm_url || '', vllm_enabled ? 1 : 0, whisper_url || '', whisper_enabled ? 1 : 0,
+                    default_model_id || null, timeout, maxTokens
+                ]
             );
             res.json({ message: 'Paramètres IA enregistrés' });
         } catch (error) {
@@ -606,7 +775,7 @@ module.exports = (app, db, authenticateAdmin) => {
      */
     router.get('/models/catalog', authenticateAdmin, async (req, res) => {
         const { provider } = req.query;
-        if (!['groq', 'nvidia', 'ollama'].includes(provider)) {
+        if (!KNOWN_PROVIDERS.includes(provider)) {
             return res.status(400).json({ error: 'Fournisseur inconnu' });
         }
         try {
@@ -616,7 +785,9 @@ module.exports = (app, db, authenticateAdmin) => {
             const effective = {
                 groq_api_key: req.query.api_key || settings.groq_api_key,
                 nvidia_api_key: req.query.api_key || settings.nvidia_api_key,
-                ollama_url: req.query.url || settings.ollama_url
+                ollama_url: req.query.url || settings.ollama_url,
+                vllm_url: req.query.url || settings.vllm_url,
+                whisper_url: req.query.url || settings.whisper_url
             };
             res.json(await listProviderModels(provider, effective));
         } catch (error) {
@@ -630,11 +801,11 @@ module.exports = (app, db, authenticateAdmin) => {
      * /api/ai/models:
      *   post:
      *     tags: [AI]
-     *     summary: Ajoute un modèle pour un fournisseur (Groq, NVIDIA ou Ollama)
+     *     summary: Ajoute un modèle pour un fournisseur (Groq, NVIDIA, Ollama, vLLM ou Faster-Whisper)
      */
     router.post('/models', authenticateAdmin, async (req, res) => {
         const { provider, name, model } = req.body;
-        if (!['groq', 'nvidia', 'ollama'].includes(provider)) {
+        if (!KNOWN_PROVIDERS.includes(provider)) {
             return res.status(400).json({ error: 'Fournisseur inconnu' });
         }
         if (!name || !model) {
@@ -725,4 +896,9 @@ module.exports = (app, db, authenticateAdmin) => {
     app.locals.startAiQueryAsync = (prompt, preferredModelId) => startAiQueryAsync(db, prompt, preferredModelId);
     app.locals.getQueryJobStatus = (queryId) => getQueryJobStatus(queryId);
     app.locals.testAllModels = () => testAllModels(db);
+    // Transcription audio (Faster-Whisper) — utilisée par la route publique /api/v1/ai/transcribe.
+    app.locals.transcribeAudio = async (audio, opts) => {
+        const settings = await db.get('SELECT * FROM ai_settings WHERE id = 1') || {};
+        return transcribeAudio(settings, audio, opts);
+    };
 };

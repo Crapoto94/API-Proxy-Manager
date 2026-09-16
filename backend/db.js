@@ -182,15 +182,21 @@ async function setupDb() {
         );
 
         -- Paramétrage IA (mêmes fournisseurs/paramètres que l'outil analyse-mail : Groq,
-        -- NVIDIA NIM, Ollama). ai_models : un modèle nommé par fournisseur (plusieurs
-        -- possibles). ai_model_status : résultat du dernier test (manuel ou planifié
-        -- toutes les heures) par modèle, consulté par l'API externe sans re-tester en direct.
+        -- NVIDIA NIM, Ollama, plus deux fournisseurs LOCAUX : vLLM Qwen3-Omni (LLM
+        -- multimodal) et Faster-Whisper (transcription audio STT)). ai_models : un modèle
+        -- nommé par fournisseur (plusieurs possibles). ai_model_status : résultat du dernier
+        -- test (manuel ou planifié toutes les heures) par modèle, consulté par l'API externe
+        -- sans re-tester en direct.
         CREATE TABLE IF NOT EXISTS ai_settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             groq_api_key TEXT,
             nvidia_api_key TEXT,
             ollama_url TEXT,
             ollama_enabled INTEGER DEFAULT 0,
+            vllm_url TEXT DEFAULT 'http://10.103.130.166:8090/v1',
+            vllm_enabled INTEGER DEFAULT 1,
+            whisper_url TEXT DEFAULT 'http://10.103.130.166:8091/v1',
+            whisper_enabled INTEGER DEFAULT 1,
             default_model_id INTEGER,
             query_timeout_ms INTEGER DEFAULT 300000,
             max_tokens INTEGER DEFAULT 16000
@@ -256,6 +262,37 @@ async function setupDb() {
         // Column probably already exists
     }
 
+    // Fournisseurs IA locaux (matériel dédié sur le réseau interne) : vLLM Qwen3-Omni
+    // (LLM multimodal) et Faster-Whisper (transcription audio STT). Mêmes paramètres que
+    // les autres fournisseurs (URL + activation), préremplis avec l'infrastructure connue.
+    try {
+        await db.run("ALTER TABLE ai_settings ADD COLUMN vllm_url TEXT DEFAULT 'http://10.103.130.166:8090/v1'");
+        console.log('[DB] Colonne vllm_url ajoutée à ai_settings');
+    } catch (e) {
+        // Column probably already exists
+    }
+
+    try {
+        await db.run('ALTER TABLE ai_settings ADD COLUMN vllm_enabled INTEGER DEFAULT 1');
+        console.log('[DB] Colonne vllm_enabled ajoutée à ai_settings');
+    } catch (e) {
+        // Column probably already exists
+    }
+
+    try {
+        await db.run("ALTER TABLE ai_settings ADD COLUMN whisper_url TEXT DEFAULT 'http://10.103.130.166:8091/v1'");
+        console.log('[DB] Colonne whisper_url ajoutée à ai_settings');
+    } catch (e) {
+        // Column probably already exists
+    }
+
+    try {
+        await db.run('ALTER TABLE ai_settings ADD COLUMN whisper_enabled INTEGER DEFAULT 1');
+        console.log('[DB] Colonne whisper_enabled ajoutée à ai_settings');
+    } catch (e) {
+        // Column probably already exists
+    }
+
     // Insert default mail settings if not exists
     await db.run('INSERT OR IGNORE INTO mail_settings (id) VALUES (1)');
     await db.run('INSERT OR IGNORE INTO frizbi_settings (id) VALUES (1)');
@@ -267,6 +304,29 @@ async function setupDb() {
     await db.run('INSERT OR IGNORE INTO o365_settings (id) VALUES (1)');
     await db.run('INSERT OR IGNORE INTO glpi_settings (id) VALUES (1)');
     await db.run('INSERT OR IGNORE INTO ai_settings (id) VALUES (1)');
+
+    // Seed des deux IA locales par défaut : vLLM Qwen3-Omni (LLM multimodal) et
+    // Faster-Whisper (STT). Insérées une seule fois (si aucun modèle de ce fournisseur
+    // n'existe déjà), pour qu'elles apparaissent d'emblée dans l'écran Paramétrage IA et
+    // dans /api/v1/ai/models. L'identifiant technique de vLLM est celui réellement exposé
+    // par son /v1/models.
+    const vllmCount = await db.get("SELECT COUNT(*) as c FROM ai_models WHERE provider = 'vllm'");
+    if (vllmCount.c === 0) {
+        await db.run(
+            "INSERT INTO ai_models (provider, name, model) VALUES ('vllm', ?, ?)",
+            ['Qwen3-Omni 30B (local)', '/models/Qwen3-Omni-30B-A3B-Instruct']
+        );
+        console.log('[DB] Modèle IA local vLLM (Qwen3-Omni) ajouté');
+    }
+
+    const whisperCount = await db.get("SELECT COUNT(*) as c FROM ai_models WHERE provider = 'whisper'");
+    if (whisperCount.c === 0) {
+        await db.run(
+            "INSERT INTO ai_models (provider, name, model) VALUES ('whisper', ?, ?)",
+            ['Faster-Whisper STT (local)', 'whisper-1']
+        );
+        console.log('[DB] Modèle IA local Faster-Whisper (STT) ajouté');
+    }
 
     // Seed default admin user if no users exist
     const userCount = await db.get('SELECT COUNT(*) as c FROM users');

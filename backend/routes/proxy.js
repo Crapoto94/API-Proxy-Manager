@@ -1,18 +1,28 @@
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
+const multer = require('multer');
 const { fuzzyAccentLDAPValue, decodeEntryAttrs, decodeLDAPString } = require('./ldap_helpers');
 
 /**
  * @openapi
  * tags:
  *   name: Proxy APIs (External)
- *   description: APIs sécurisées par Clé API pour applications externes (SMS, Mail)
+ *   description: APIs sécurisées par Clé API pour applications externes (SMS, Mail, IA dont
+ *     transcription audio locale Faster-Whisper via /ai/transcribe)
  */
 
 module.exports = (app, db, authenticateAdmin) => {
     const proxyRouter = express.Router();
     const adminRouter = express.Router();
+
+    // Upload en mémoire pour la transcription audio (Faster-Whisper) : le fichier est
+    // relayé directement au service STT, jamais écrit sur disque. 100 Mo max (longs
+    // enregistrements), champ multipart "file".
+    const transcribeUpload = multer({
+        storage: multer.memoryStorage(),
+        limits: { fileSize: 100 * 1024 * 1024 }
+    });
 
     const escapeLDAPSearchFilter = (str) => {
         if (typeof str !== 'string') return str;
@@ -144,6 +154,7 @@ module.exports = (app, db, authenticateAdmin) => {
             else if (path.startsWith('/o365/harvest')) requiredPermission = 'o365_harvest';
             else if (path.startsWith('/glpi/')) requiredPermission = 'glpi_read';
             else if (path.startsWith('/ai/query')) requiredPermission = 'ai_query';
+            else if (path.startsWith('/ai/transcribe')) requiredPermission = 'ai_transcribe';
             else if (path.startsWith('/ai/models')) requiredPermission = 'ai_read';
 
             const authorizedRoutes = JSON.parse(appEntry.authorized_routes || '["*"]');
@@ -1075,6 +1086,82 @@ module.exports = (app, db, authenticateAdmin) => {
         const job = app.locals.getQueryJobStatus(req.params.queryId);
         if (!job) return res.status(404).json({ error: 'queryId introuvable (expiré ou jamais existé)' });
         res.json(job);
+    });
+
+    /**
+     * @openapi
+     * /api/v1/ai/transcribe:
+     *   post:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Transcrit un fichier audio via l'IA locale Faster-Whisper (STT)
+     *     description: >
+     *       Relaie le fichier vers le service local Faster-Whisper (API compatible OpenAI
+     *       /v1/audio/transcriptions). Accepte soit un envoi multipart/form-data avec le champ
+     *       "file" (recommandé pour un fichier), soit un JSON avec le contenu audio encodé en
+     *       base64 dans "audio". Options : "language" (code ISO, ex. "fr"), "prompt" (contexte
+     *       pour guider la transcription) et "model".
+     *     security: [{ ApiKeyAuth: [] }]
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         multipart/form-data:
+     *           schema:
+     *             type: object
+     *             properties:
+     *               file:
+     *                 type: string
+     *                 format: binary
+     *               language:
+     *                 type: string
+     *               model:
+     *                 type: string
+     *               prompt:
+     *                 type: string
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [audio]
+     *             properties:
+     *               audio:
+     *                 type: string
+     *                 description: "Contenu audio encodé en base64"
+     *               filename:
+     *                 type: string
+     *                 example: "reunion.wav"
+     *               language:
+     *                 type: string
+     *                 example: "fr"
+     *               model:
+     *                 type: string
+     *                 example: "whisper-1"
+     *               prompt:
+     *                 type: string
+     *     responses:
+     *       200:
+     *         description: Transcription réussie
+     *       400:
+     *         description: Fichier audio manquant
+     *       503:
+     *         description: Service de transcription indisponible ou désactivé
+     */
+    proxyRouter.post('/ai/transcribe', verifyApiKey, transcribeUpload.single('file'), async (req, res) => {
+        const file = req.file;
+        const audio = file ? file.buffer : (req.body?.audio || req.body?.file_base64);
+        if (!audio) {
+            return res.status(400).json({ error: 'Fichier audio requis (champ multipart "file" ou JSON "audio" en base64)' });
+        }
+        try {
+            const result = await app.locals.transcribeAudio(audio, {
+                filename: file?.originalname || req.body?.filename || 'audio.wav',
+                language: req.body?.language || null,
+                prompt: req.body?.prompt || null,
+                model: req.body?.model || 'whisper-1'
+            });
+            console.log(`[PROXY AI] Transcription for ${req.externalApp.name}: ${result.text.length} caractère(s)`);
+            res.json({ status: 'success', provider: 'whisper', provider_label: 'Faster-Whisper STT (local)', text: result.text });
+        } catch (error) {
+            res.status(503).json({ error: error.message });
+        }
     });
 
     // --- Admin APIs for External Apps ---

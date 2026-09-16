@@ -16,7 +16,8 @@ import {
   Loader2,
   Power,
   Database,
-  Bot
+  Bot,
+  Mic
 } from 'lucide-react';
 import { API_BASE_URL } from '../config';
 
@@ -44,6 +45,7 @@ const AVAILABLE_PERMISSIONS = [
     { id: 'glpi_read', name: 'Stats GLPI', icon: Activity },
     { id: 'ai_read', name: 'Liste modèles IA', icon: Bot },
     { id: 'ai_query', name: 'Interrogation IA', icon: Bot },
+    { id: 'ai_transcribe', name: 'Transcription audio IA (Faster-Whisper)', icon: Mic },
 ];
 
 import { RefreshCw, Edit3 } from 'lucide-react';

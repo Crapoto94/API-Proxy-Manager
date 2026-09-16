@@ -22,6 +22,10 @@ interface AiSettings {
     nvidia_api_key: string;
     ollama_url: string;
     ollama_enabled: number;
+    vllm_url: string;
+    vllm_enabled: number;
+    whisper_url: string;
+    whisper_enabled: number;
     default_model_id: number | null;
     query_timeout_ms: number;
     max_tokens: number;
@@ -30,8 +34,10 @@ interface AiSettings {
 interface AiModel {
     id: number;
     key: string;
-    provider: 'groq' | 'nvidia' | 'ollama';
+    provider: 'groq' | 'nvidia' | 'ollama' | 'vllm' | 'whisper';
     provider_label: string;
+    local?: boolean;
+    capabilities?: string[];
     name: string;
     model: string;
     is_active: boolean;
@@ -48,7 +54,9 @@ interface AiModel {
 const PROVIDER_OPTIONS = [
     { id: 'groq', label: 'Groq' },
     { id: 'nvidia', label: 'NVIDIA NIM' },
-    { id: 'ollama', label: 'Ollama' }
+    { id: 'ollama', label: 'Ollama' },
+    { id: 'vllm', label: 'vLLM Qwen3-Omni (local)' },
+    { id: 'whisper', label: 'Faster-Whisper STT (local)' }
 ];
 
 interface CatalogModel {
@@ -93,6 +101,10 @@ const AISettings: React.FC = () => {
         nvidia_api_key: '',
         ollama_url: '',
         ollama_enabled: 0,
+        vllm_url: '',
+        vllm_enabled: 0,
+        whisper_url: '',
+        whisper_enabled: 0,
         default_model_id: null,
         query_timeout_ms: 300000,
         max_tokens: 16000
@@ -165,6 +177,8 @@ const AISettings: React.FC = () => {
             if (newModel.provider === 'groq') params.api_key = settings.groq_api_key || '';
             if (newModel.provider === 'nvidia') params.api_key = settings.nvidia_api_key || '';
             if (newModel.provider === 'ollama') params.url = settings.ollama_url || '';
+            if (newModel.provider === 'vllm') params.url = settings.vllm_url || '';
+            if (newModel.provider === 'whisper') params.url = settings.whisper_url || '';
             const res = await axios.get(`${API_BASE}/models/catalog`, { params });
             setCatalog(res.data);
         } catch (err: any) {
@@ -231,7 +245,7 @@ const AISettings: React.FC = () => {
                 <div>
                     <h2 className="text-3xl font-black text-slate-900">Intelligence Artificielle</h2>
                     <p className="text-slate-500 mt-2 font-medium">
-                        Paramétrez les fournisseurs IA (Groq, NVIDIA NIM, Ollama) et exposez-les via l'API Ville — mêmes paramètres que l'outil analyse-mail.
+                        Paramétrez les fournisseurs IA (Groq, NVIDIA NIM, Ollama) et les IA <strong>locales</strong> (vLLM Qwen3-Omni multimodal, Faster-Whisper STT), puis exposez-les via l'API Ville — mêmes paramètres que l'outil analyse-mail.
                     </p>
                 </div>
                 <button
@@ -287,6 +301,66 @@ const AISettings: React.FC = () => {
                                     <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${settings.ollama_enabled ? 'right-1' : 'left-1'}`} />
                                 </button>
                                 <span className="text-sm font-bold text-slate-700">Activer Ollama</span>
+                            </div>
+
+                            <div className="pt-2 border-t border-slate-100">
+                                <h4 className="text-xs font-black text-slate-700 uppercase tracking-widest mt-2 mb-1 flex items-center gap-2">
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[10px]">LOCAL</span>
+                                    vLLM — Qwen3-Omni (LLM multimodal)
+                                </h4>
+                                <p className="text-xs text-slate-400 font-medium mb-3 ml-1">
+                                    LLM multimodal hébergé sur le réseau interne (texte, image, audio). Participe au flux d'interrogation comme les autres fournisseurs.
+                                </p>
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Base URL vLLM</label>
+                                    <input
+                                        type="text"
+                                        value={settings.vllm_url || ''}
+                                        onChange={e => setSettings({ ...settings, vllm_url: e.target.value })}
+                                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-3 px-5 outline-none focus:border-blue-500 transition-all font-bold text-sm"
+                                        placeholder="http://10.103.130.166:8090/v1"
+                                    />
+                                </div>
+                                <div className="flex items-center gap-3 mt-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setSettings({ ...settings, vllm_enabled: settings.vllm_enabled ? 0 : 1 })}
+                                        className={`w-12 h-6 rounded-full transition-all relative ${settings.vllm_enabled ? 'bg-blue-600' : 'bg-slate-300'}`}
+                                    >
+                                        <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${settings.vllm_enabled ? 'right-1' : 'left-1'}`} />
+                                    </button>
+                                    <span className="text-sm font-bold text-slate-700">Activer vLLM (Qwen3-Omni)</span>
+                                </div>
+                            </div>
+
+                            <div className="pt-2 border-t border-slate-100">
+                                <h4 className="text-xs font-black text-slate-700 uppercase tracking-widest mt-2 mb-1 flex items-center gap-2">
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[10px]">LOCAL</span>
+                                    Faster-Whisper — Transcription audio (STT)
+                                </h4>
+                                <p className="text-xs text-slate-400 font-medium mb-3 ml-1">
+                                    Modèle spécialisé dans la transcription audio, hébergé sur le réseau interne. Exposé via <code className="bg-slate-100 px-1 rounded">/api/v1/ai/transcribe</code> (ne répond pas au chat).
+                                </p>
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Base URL Faster-Whisper</label>
+                                    <input
+                                        type="text"
+                                        value={settings.whisper_url || ''}
+                                        onChange={e => setSettings({ ...settings, whisper_url: e.target.value })}
+                                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-3 px-5 outline-none focus:border-blue-500 transition-all font-bold text-sm"
+                                        placeholder="http://10.103.130.166:8091/v1"
+                                    />
+                                </div>
+                                <div className="flex items-center gap-3 mt-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setSettings({ ...settings, whisper_enabled: settings.whisper_enabled ? 0 : 1 })}
+                                        className={`w-12 h-6 rounded-full transition-all relative ${settings.whisper_enabled ? 'bg-blue-600' : 'bg-slate-300'}`}
+                                    >
+                                        <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${settings.whisper_enabled ? 'right-1' : 'left-1'}`} />
+                                    </button>
+                                    <span className="text-sm font-bold text-slate-700">Activer Faster-Whisper (STT)</span>
+                                </div>
                             </div>
                             <div className="space-y-2">
                                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">
@@ -383,7 +457,15 @@ const AISettings: React.FC = () => {
                         <tbody className="divide-y divide-slate-50">
                             {models.map(m => (
                                 <tr key={m.id} className={!m.active ? 'opacity-50' : ''}>
-                                    <td className="p-4 font-black text-slate-700">{m.provider_label}</td>
+                                    <td className="p-4 font-black text-slate-700">
+                                        <div className="flex items-center gap-2">
+                                            {m.provider_label}
+                                            {m.local && <span className="text-[9px] font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">LOCAL</span>}
+                                        </div>
+                                        {m.capabilities && m.capabilities.length > 0 && (
+                                            <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">{m.capabilities.join(' · ')}</div>
+                                        )}
+                                    </td>
                                     <td className="p-4 font-bold">{m.name}</td>
                                     <td className="p-4 font-mono text-xs text-slate-500">{m.model}</td>
                                     <td className="p-4">
