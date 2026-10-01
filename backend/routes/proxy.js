@@ -79,6 +79,13 @@ module.exports = (app, db, authenticateAdmin) => {
         }
     };
 
+    // Taille maximale d'un champ journalisé : évite que les réponses volumineuses
+    // (ex. documents/photos Frizbi en base64) ne gonflent la table proxy_logs.
+    const MAX_LOG_CHARS = 20000;
+    const truncateForLog = (s) => (typeof s === 'string' && s.length > MAX_LOG_CHARS)
+        ? `${s.slice(0, MAX_LOG_CHARS)}… [tronqué]`
+        : s;
+
     // --- Middleware: Global Proxy Logger (External APIs only) ---
     const proxyLogger = async (req, res, next) => {
         const originalJson = res.json;
@@ -87,8 +94,8 @@ module.exports = (app, db, authenticateAdmin) => {
             const status = res.statusCode;
             const appEntry = req.externalApp || null;
             
-            const safeBody = maskSensitiveData(req.body || {});
-            const safeResponse = maskSensitiveData(data || {});
+            const safeBody = truncateForLog(maskSensitiveData(req.body || {}));
+            const safeResponse = truncateForLog(maskSensitiveData(data || {}));
 
             // Log for external proxy routes
             db.run(
@@ -188,12 +195,53 @@ module.exports = (app, db, authenticateAdmin) => {
         return { token: response.data.token, apiUrl: s.api_url, senderId: s.sender_id };
     }
 
+    // Personnalisation de l'émetteur (TPOA) : activée par défaut ; seule une
+    // valeur explicitement fausse (false, 0, "0", "false") la désactive.
+    const frizbiTpoa = (v) => !(v === false || v === 0 || v === '0' || v === 'false');
+
+    // Appel authentifié à l'API Frizbi. `auth` provient de getFrizbiToken().
+    // Ne lève pas sur les statuts HTTP >= 300 : l'erreur porte frizbiStatus /
+    // frizbiData pour une remontée fidèle au client.
+    async function frizbiRequest(auth, method, pathSuffix, data) {
+        const response = await axios({
+            method,
+            url: `${auth.apiUrl}${pathSuffix}`,
+            data,
+            headers: { 'Authorization': `Bearer ${auth.token}`, 'Content-Type': 'application/json' },
+            validateStatus: () => true
+        });
+        if (response.status >= 300) {
+            const d = response.data || {};
+            const err = new Error(d.details || d.message || `Frizbi HTTP ${response.status}`);
+            err.frizbiStatus = response.status;
+            err.frizbiData = d;
+            throw err;
+        }
+        return response.data;
+    }
+
+    function frizbiErrorResponse(res, error) {
+        console.error('[PROXY SMS] Error:', error.frizbiData || error.message);
+        const status = (error.frizbiStatus && error.frizbiStatus < 500) ? error.frizbiStatus : 502;
+        return res.status(status).json({
+            error: (error.frizbiData && (error.frizbiData.details || error.frizbiData.message)) || error.message,
+            frizbi: error.frizbiData || null
+        });
+    }
+
     /**
      * @openapi
      * /api/v1/sms/send:
      *   post:
      *     tags: [Proxy APIs (External)]
-     *     summary: Envoie un SMS via le proxy Frizbi
+     *     summary: Envoie un SMS (ou un lot) via le proxy Frizbi
+     *     description: >
+     *       Relaie l'envoi vers l'API Frizbi. Deux formes possibles : le raccourci
+     *       `mobile` (un destinataire) ou `contacts` (unitaire ou groupé, avec
+     *       variables par contact). Reprend les capacités de Frizbi : envoi
+     *       différé (`date`), collecte de photo (`sendDoc`), variables de contact,
+     *       identifiants de suivi personnalisés. L'émetteur est personnalisé
+     *       (TPOA) par défaut.
      *     security:
      *       - ApiKeyAuth: []
      *     requestBody:
@@ -202,68 +250,298 @@ module.exports = (app, db, authenticateAdmin) => {
      *         application/json:
      *           schema:
      *             type: object
-     *             required: [mobile, message]
+     *             required: [message]
      *             properties:
-     *               mobile:
-     *                 type: string
-     *                 example: "0601020304"
      *               message:
      *                 type: string
+     *                 description: "Contenu du SMS. Variables de contact possibles sous la forme $cle$."
      *                 example: "Votre code de validation est 123456"
+     *               mobile:
+     *                 type: string
+     *                 description: "Raccourci pour un destinataire unique."
+     *                 example: "0601020304"
+     *               contacts:
+     *                 type: array
+     *                 description: "Liste de destinataires (à la place de `mobile`)."
+     *                 items:
+     *                   type: object
+     *                   required: [mobile]
+     *                   properties:
+     *                     mobile: { type: string }
+     *                     firstName: { type: string }
+     *                     lastName: { type: string }
+     *                     customerSmsContactId:
+     *                       type: string
+     *                       description: "Identifiant de suivi (sinon généré)."
+     *                     variables:
+     *                       type: array
+     *                       items:
+     *                         type: object
+     *                         properties:
+     *                           variableKey: { type: string }
+     *                           variableValue: { type: string }
+     *               title:
+     *                 type: string
+     *                 description: "Titre de la campagne Frizbi (défaut : nom de l'application)."
+     *               customerSmsId:
+     *                 type: string
+     *                 description: "Identifiant unique d'envoi (défaut : ext_<app>_<timestamp>)."
+     *               customerSenderId:
+     *                 type: string
+     *                 description: "Identifiant d'auteur Frizbi (défaut : sender ID configuré)."
+     *               date:
+     *                 type: string
+     *                 format: date-time
+     *                 description: "Date d'envoi différé. Vide ou passée = immédiat."
+     *               sendDoc:
+     *                 type: boolean
+     *                 description: "Ajoute un lien de collecte de photo en fin de SMS."
      *               tpoa:
      *                 type: boolean
      *                 default: true
      *                 description: >-
      *                   Personnalisation de l'émetteur (paramètre TPOA de l'API
-     *                   Frizbi). ACTIVÉE par défaut : sans ce champ, le SMS part
-     *                   avec l'émetteur personnalisé (sender ID configuré, ex.
-     *                   « APM »). Passer `false` pour utiliser l'émetteur par
-     *                   défaut de la plateforme.
+     *                   Frizbi). ACTIVÉE par défaut ; passer `false` pour utiliser
+     *                   l'émetteur par défaut de la plateforme.
      *                 example: true
      *     responses:
-     *       200:
-     *         description: SMS envoyé
-     *       401:
-     *         description: Clé API manquante ou invalide
-     *       403:
-     *         description: IP non autorisée ou permissions insuffisantes
+     *       200: { description: SMS envoyé }
+     *       400: { description: Requête invalide }
+     *       401: { description: Clé API manquante ou invalide }
+     *       403: { description: IP non autorisée ou permissions insuffisantes }
+     *       502: { description: Erreur renvoyée par Frizbi }
      */
     proxyRouter.post('/sms/send', verifyApiKey, async (req, res) => {
-        const { mobile, message, tpoa } = req.body;
-        if (!mobile || !message) {
-            return res.status(400).json({ error: 'mobile and message are required' });
-        }
+        const b = req.body || {};
+        const message = typeof b.message === 'string' ? b.message : '';
+        if (!message.trim()) return res.status(400).json({ error: 'message is required' });
 
-        // Personnalisation de l'émetteur (TPOA) : activée par défaut ; seule la
-        // valeur explicite `false` (ou 0 / "false") la désactive.
-        const tpoaEnabled = !(tpoa === false || tpoa === 0 || tpoa === '0' || tpoa === 'false');
+        // Contacts : soit `contacts[]` (unitaire ou lot), soit le raccourci `mobile`.
+        let contacts = [];
+        if (Array.isArray(b.contacts) && b.contacts.length) {
+            contacts = b.contacts.map((c, i) => ({
+                customerSmsContactId: c.customerSmsContactId || `c_${Date.now()}_${i}`,
+                mobile: c.mobile,
+                ...(c.firstName ? { firstName: c.firstName } : {}),
+                ...(c.lastName ? { lastName: c.lastName } : {}),
+                ...(Array.isArray(c.variables) && c.variables.length
+                    ? { variables: c.variables.map(v => ({ variableKey: v.variableKey, variableValue: v.variableValue })) }
+                    : {})
+            }));
+        } else if (b.mobile) {
+            contacts = [{ customerSmsContactId: `c_${Date.now()}`, mobile: b.mobile }];
+        }
+        if (!contacts.length) return res.status(400).json({ error: 'mobile or contacts[] is required' });
+        if (contacts.some(c => !c.mobile)) return res.status(400).json({ error: 'chaque contact doit avoir un mobile' });
+
+        const tpoaEnabled = frizbiTpoa(b.tpoa);
 
         try {
-            const { token, apiUrl, senderId } = await getFrizbiToken();
-            
+            const auth = await getFrizbiToken();
+            const customerSmsId = b.customerSmsId || `ext_${req.externalApp.id}_${Date.now()}`;
             const payload = {
-                customerSmsId: `ext_${req.externalApp.id}_${Date.now()}`,
-                title: req.externalApp.name,
-                message: message,
-                customerSenderId: senderId || 'APM',
+                customerSmsId,
+                title: b.title || req.externalApp.name,
+                message,
+                customerSenderId: b.customerSenderId || auth.senderId || 'APM',
                 tpoa: tpoaEnabled,
-                smsContacts: [
-                    {
-                        customerSmsContactId: `c_${Date.now()}`,
-                        mobile: mobile
-                    }
-                ]
+                smsContacts: contacts
             };
+            if (b.date) payload.date = b.date;
+            if (b.sendDoc !== undefined) payload.sendDoc = !!b.sendDoc;
 
-            const response = await axios.post(`${apiUrl}/api/sms/send`, payload, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-
-            console.log(`[PROXY SMS] Sent for ${req.externalApp.name}: ${mobile} (tpoa=${tpoaEnabled})`);
-            res.json({ status: 'success', tpoa: tpoaEnabled, data: response.data });
+            const data = await frizbiRequest(auth, 'post', '/api/sms/send', payload);
+            console.log(`[PROXY SMS] Sent for ${req.externalApp.name}: ${contacts.length} contact(s) (tpoa=${tpoaEnabled})`);
+            res.json({ status: 'success', tpoa: tpoaEnabled, customerSmsId, data });
         } catch (error) {
-            console.error('[PROXY SMS] Error:', error.response?.data || error.message);
-            res.status(500).json({ error: error.response?.data?.message || error.message });
+            frizbiErrorResponse(res, error);
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/sms/{customerSmsId}:
+     *   delete:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Supprime (annule) un envoi Frizbi programmé
+     *     description: Seuls les envois différés de plus de deux minutes peuvent être supprimés (règle Frizbi).
+     *     security: [{ ApiKeyAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: customerSmsId
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200: { description: Envoi supprimé }
+     *       401: { description: Clé API manquante ou invalide }
+     *       502: { description: Erreur Frizbi }
+     */
+    proxyRouter.delete('/sms/:customerSmsId', verifyApiKey, async (req, res) => {
+        try {
+            const auth = await getFrizbiToken();
+            const data = await frizbiRequest(auth, 'delete', `/api/sms/delete/${encodeURIComponent(req.params.customerSmsId)}`);
+            res.json({ status: 'success', data });
+        } catch (error) {
+            frizbiErrorResponse(res, error);
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/sms/status/{customerSmsId}:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Statut et historique d'un envoi Frizbi
+     *     security: [{ ApiKeyAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: customerSmsId
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200: { description: "Statut par contact (code, historique, réponses)" }
+     *       401: { description: Clé API manquante ou invalide }
+     *       502: { description: Erreur Frizbi }
+     */
+    proxyRouter.get('/sms/status/:customerSmsId', verifyApiKey, async (req, res) => {
+        try {
+            const auth = await getFrizbiToken();
+            const data = await frizbiRequest(auth, 'get', `/api/sms/status/${encodeURIComponent(req.params.customerSmsId)}`);
+            res.json({ status: 'success', data });
+        } catch (error) {
+            frizbiErrorResponse(res, error);
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/sms/status:
+     *   post:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Statuts de plusieurs SMS contacts (par customerSmsContactId)
+     *     security: [{ ApiKeyAuth: [] }]
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [customerSmsContactIds]
+     *             properties:
+     *               customerSmsContactIds:
+     *                 type: array
+     *                 maxItems: 500
+     *                 items: { type: string }
+     *     responses:
+     *       200: { description: Liste des statuts }
+     *       400: { description: Requête invalide }
+     *       401: { description: Clé API manquante ou invalide }
+     *       502: { description: Erreur Frizbi }
+     */
+    proxyRouter.post('/sms/status', verifyApiKey, async (req, res) => {
+        const ids = Array.isArray(req.body) ? req.body
+            : (req.body && Array.isArray(req.body.customerSmsContactIds) ? req.body.customerSmsContactIds : null);
+        if (!ids || !ids.length) return res.status(400).json({ error: 'customerSmsContactIds[] is required' });
+        if (ids.length > 500) return res.status(400).json({ error: '500 identifiants maximum par appel' });
+        try {
+            const auth = await getFrizbiToken();
+            const data = await frizbiRequest(auth, 'post', '/api/sms/status/smsContactsIds', ids);
+            res.json({ status: 'success', data });
+        } catch (error) {
+            frizbiErrorResponse(res, error);
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/sms/responses:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Dernières réponses SMS reçues (Frizbi)
+     *     security: [{ ApiKeyAuth: [] }]
+     *     responses:
+     *       200: { description: Réponses reçues }
+     *       401: { description: Clé API manquante ou invalide }
+     *       502: { description: Erreur Frizbi }
+     */
+    proxyRouter.get('/sms/responses', verifyApiKey, async (req, res) => {
+        try {
+            const auth = await getFrizbiToken();
+            const data = await frizbiRequest(auth, 'get', '/api/sms/responses/last');
+            res.json({ status: 'success', data });
+        } catch (error) {
+            frizbiErrorResponse(res, error);
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/sms/documents/last-ids:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Identifiants des derniers documents (photos) non consultés
+     *     security: [{ ApiKeyAuth: [] }]
+     *     responses:
+     *       200: { description: Liste d'identifiants de documents }
+     *       401: { description: Clé API manquante ou invalide }
+     *       502: { description: Erreur Frizbi }
+     */
+    proxyRouter.get('/sms/documents/last-ids', verifyApiKey, async (req, res) => {
+        try {
+            const auth = await getFrizbiToken();
+            const data = await frizbiRequest(auth, 'get', '/api/sms/document/last-documentIds');
+            res.json({ status: 'success', data });
+        } catch (error) {
+            frizbiErrorResponse(res, error);
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/sms/documents/last:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Derniers documents (photos) non consultés, en base64
+     *     security: [{ ApiKeyAuth: [] }]
+     *     responses:
+     *       200: { description: "Documents (image en base64)" }
+     *       401: { description: Clé API manquante ou invalide }
+     *       502: { description: Erreur Frizbi }
+     */
+    proxyRouter.get('/sms/documents/last', verifyApiKey, async (req, res) => {
+        try {
+            const auth = await getFrizbiToken();
+            const data = await frizbiRequest(auth, 'get', '/api/sms/document/last-documents');
+            res.json({ status: 'success', data });
+        } catch (error) {
+            frizbiErrorResponse(res, error);
+        }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/sms/documents/{id}:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Télécharge un document (photo) Frizbi par identifiant
+     *     security: [{ ApiKeyAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200: { description: "Document (image en base64)" }
+     *       401: { description: Clé API manquante ou invalide }
+     *       502: { description: Erreur Frizbi }
+     */
+    proxyRouter.get('/sms/documents/:id', verifyApiKey, async (req, res) => {
+        try {
+            const auth = await getFrizbiToken();
+            const data = await frizbiRequest(auth, 'get', `/api/sms/document/get-doc/${encodeURIComponent(req.params.id)}`);
+            res.json({ status: 'success', data });
+        } catch (error) {
+            frizbiErrorResponse(res, error);
         }
     });
 
