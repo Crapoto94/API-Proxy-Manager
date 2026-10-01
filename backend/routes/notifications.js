@@ -394,7 +394,9 @@ module.exports = function(app, db, authenticateAdmin) {
      *         description: SMS envoyé
      */
     app.post('/api/admin/frizbi/send-test', authenticateAdmin, async (req, res) => {
-        const { mobile } = req.body;
+        const { mobile, tpoa } = req.body;
+        // Personnalisation de l'émetteur (TPOA) : activée par défaut.
+        const tpoaEnabled = !(tpoa === false || tpoa === 0 || tpoa === '0' || tpoa === 'false');
         try {
             const settings = await db.get('SELECT * FROM frizbi_settings WHERE id = 1');
             if (!settings || !settings.is_enabled) return res.status(400).json({ message: 'Le service SMS est désactivé' });
@@ -409,6 +411,7 @@ module.exports = function(app, db, authenticateAdmin) {
                 title: "Test APM",
                 message: "Ceci est un SMS de test envoyé depuis l'API Proxy Manager.",
                 customerSenderId: settings.sender_id || 'APM',
+                tpoa: tpoaEnabled,
                 smsContacts: [
                     {
                         customerSmsContactId: `contact_${Date.now()}`,

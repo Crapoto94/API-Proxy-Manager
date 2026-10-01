@@ -170,6 +170,10 @@ const FrizbiSettings: React.FC = () => {
                   maxLength={11}
                 />
               </div>
+              <p className="text-xs text-slate-500 font-medium mt-1">
+                La personnalisation de l'émetteur (TPOA) est <b>activée par défaut</b> : le destinataire voit ce Sender ID.
+                Un appel à l'API d'envoi peut la désactiver avec <code>tpoa: false</code>.
+              </p>
             </div>
           </div>
         </div>

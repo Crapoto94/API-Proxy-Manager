@@ -210,6 +210,16 @@ module.exports = (app, db, authenticateAdmin) => {
      *               message:
      *                 type: string
      *                 example: "Votre code de validation est 123456"
+     *               tpoa:
+     *                 type: boolean
+     *                 default: true
+     *                 description: >-
+     *                   Personnalisation de l'émetteur (paramètre TPOA de l'API
+     *                   Frizbi). ACTIVÉE par défaut : sans ce champ, le SMS part
+     *                   avec l'émetteur personnalisé (sender ID configuré, ex.
+     *                   « APM »). Passer `false` pour utiliser l'émetteur par
+     *                   défaut de la plateforme.
+     *                 example: true
      *     responses:
      *       200:
      *         description: SMS envoyé
@@ -219,10 +229,14 @@ module.exports = (app, db, authenticateAdmin) => {
      *         description: IP non autorisée ou permissions insuffisantes
      */
     proxyRouter.post('/sms/send', verifyApiKey, async (req, res) => {
-        const { mobile, message } = req.body;
+        const { mobile, message, tpoa } = req.body;
         if (!mobile || !message) {
             return res.status(400).json({ error: 'mobile and message are required' });
         }
+
+        // Personnalisation de l'émetteur (TPOA) : activée par défaut ; seule la
+        // valeur explicite `false` (ou 0 / "false") la désactive.
+        const tpoaEnabled = !(tpoa === false || tpoa === 0 || tpoa === '0' || tpoa === 'false');
 
         try {
             const { token, apiUrl, senderId } = await getFrizbiToken();
@@ -232,6 +246,7 @@ module.exports = (app, db, authenticateAdmin) => {
                 title: req.externalApp.name,
                 message: message,
                 customerSenderId: senderId || 'APM',
+                tpoa: tpoaEnabled,
                 smsContacts: [
                     {
                         customerSmsContactId: `c_${Date.now()}`,
@@ -244,8 +259,8 @@ module.exports = (app, db, authenticateAdmin) => {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
 
-            console.log(`[PROXY SMS] Sent for ${req.externalApp.name}: ${mobile}`);
-            res.json({ status: 'success', data: response.data });
+            console.log(`[PROXY SMS] Sent for ${req.externalApp.name}: ${mobile} (tpoa=${tpoaEnabled})`);
+            res.json({ status: 'success', tpoa: tpoaEnabled, data: response.data });
         } catch (error) {
             console.error('[PROXY SMS] Error:', error.response?.data || error.message);
             res.status(500).json({ error: error.response?.data?.message || error.message });
