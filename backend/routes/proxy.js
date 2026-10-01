@@ -1082,6 +1082,7 @@ module.exports = (app, db, authenticateAdmin) => {
      *   get:
      *     tags: [Proxy APIs (External)]
      *     summary: Progression d'une génération lancée via /api/v1/ai/query-async.
+     *     description: >-
      *       status='running' : tokensReceived (estimation) augmente en temps réel.
      *       status='completed' : la réponse finale est dans `response` (mêmes champs que
      *       /api/v1/ai/query). status='error' : le détail est dans `error`.
