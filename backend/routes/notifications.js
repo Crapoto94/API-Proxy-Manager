@@ -6,7 +6,25 @@ const path = require('path');
 
 module.exports = function(app, db, authenticateAdmin) {
 
+    // Normalise une liste d'adresses : chaîne « a@x.fr, b@y.fr ; c@z.fr » ou tableau → tableau
+    // d'adresses simples, dédoublonné (insensible à la casse). Les valeurs sans « @ » (dont la
+    // valeur par défaut « string » de Swagger) sont ignorées. Format « Nom <a@x.fr> » non géré.
+    function parseAddresses(value) {
+        const raw = Array.isArray(value) ? value : String(value ?? '').split(/[;,]/);
+        const seen = new Set();
+        const out = [];
+        for (const item of raw) {
+            const addr = String(item ?? '').trim();
+            if (!addr || !addr.includes('@') || seen.has(addr.toLowerCase())) continue;
+            seen.add(addr.toLowerCase());
+            out.push(addr);
+        }
+        return out;
+    }
+
     // --- Helper sendMail (Module scope) ---
+    // options : fromName, fromEmail, is_raw, attachments, footer1-3, footerColor,
+    //           cc, bcc (chaîne séparée par , ou ; — ou tableau d'adresses)
     async function sendMail(to, subject, content, options = {}) {
         const s = await db.get('SELECT * FROM mail_settings WHERE id = 1');
         if (!s) {
@@ -32,7 +50,20 @@ module.exports = function(app, db, authenticateAdmin) {
         const isRaw = options.useTemplate === false || options.is_raw === true || options.is_raw === 'true';
         const useTemplate = !isRaw;
 
-        console.log(`[MAIL SYSTEM] Préparation du mail pour ${to} (Template: ${useTemplate ? 'OUI' : 'NON'})`);
+        // Destinataires : « to » (une ou plusieurs adresses), « cc » et « bcc ». Une adresse n'est
+        // gardée qu'une fois (to > cc > bcc) : Brevo refuse les doublons entre champs.
+        const toList = parseAddresses(to);
+        if (toList.length === 0) {
+            const error = new Error('Aucun destinataire valide (to)');
+            error.status = 400;
+            throw error;
+        }
+        const used = new Set(toList.map(a => a.toLowerCase()));
+        const ccList = parseAddresses(options.cc).filter(a => !used.has(a.toLowerCase()));
+        ccList.forEach(a => used.add(a.toLowerCase()));
+        const bccList = parseAddresses(options.bcc).filter(a => !used.has(a.toLowerCase()));
+
+        console.log(`[MAIL SYSTEM] Préparation du mail pour ${toList.join(', ')}${ccList.length ? ` (cc: ${ccList.join(', ')})` : ''}${bccList.length ? ` (bcc: ${bccList.length})` : ''} (Template: ${useTemplate ? 'OUI' : 'NON'})`);
 
         if (!senderEmail) {
             throw new Error("L'adresse email de l'expéditeur n'est pas configurée");
@@ -114,10 +145,12 @@ module.exports = function(app, db, authenticateAdmin) {
             const apiUrl = s.api_url || 'https://api.brevo.com/v3/smtp/email';
             const payload = {
                 sender: { name: senderName, email: senderEmail },
-                to: [{ email: to }],
+                to: toList.map(email => ({ email })),
                 subject: subject,
                 htmlContent: html
             };
+            if (ccList.length > 0) payload.cc = ccList.map(email => ({ email }));
+            if (bccList.length > 0) payload.bcc = bccList.map(email => ({ email }));
 
             if (attachments.length > 0) {
                 payload.attachment = attachments.map(a => ({
@@ -136,7 +169,7 @@ module.exports = function(app, db, authenticateAdmin) {
             }
 
             try {
-                console.log(`[MAIL SYSTEM] Envoi via API Brevo à: ${to}`);
+                console.log(`[MAIL SYSTEM] Envoi via API Brevo à: ${toList.join(', ')}`);
                 await axios.post(apiUrl, payload, config);
             } catch (apiError) {
                 console.error('[MAIL SYSTEM] API Error:', apiError.response?.data || apiError.message);
@@ -158,7 +191,9 @@ module.exports = function(app, db, authenticateAdmin) {
             try {
                 await transporter.sendMail({
                     from: `"${senderName}" <${senderEmail}>`,
-                    to,
+                    to: toList,
+                    ...(ccList.length > 0 ? { cc: ccList } : {}),
+                    ...(bccList.length > 0 ? { bcc: bccList } : {}),
                     subject,
                     html,
                     attachments: attachments.map(a => ({
@@ -167,7 +202,7 @@ module.exports = function(app, db, authenticateAdmin) {
                         cid: a.cid
                     }))
                 });
-                console.log(`[MAIL SYSTEM] SMTP Mail envoyé avec succès à: ${to}`);
+                console.log(`[MAIL SYSTEM] SMTP Mail envoyé avec succès à: ${toList.join(', ')}`);
             } catch (smtpError) {
                 console.error('[MAIL SYSTEM] SMTP Error:', smtpError);
                 throw smtpError;

@@ -564,7 +564,16 @@ module.exports = (app, db, authenticateAdmin) => {
      *             properties:
      *               to:
      *                 type: string
+     *                 description: "Destinataire(s) : une adresse, ou plusieurs séparées par une virgule ou un point-virgule"
      *                 example: "destinataire@example.com"
+     *               cc:
+     *                 type: string
+     *                 description: "Copie (Cc), visible des destinataires. Une ou plusieurs adresses séparées par une virgule ou un point-virgule (un tableau de chaînes est aussi accepté). Les adresses déjà présentes dans « to » sont ignorées."
+     *                 example: "directeur@example.com, responsable@example.com"
+     *               bcc:
+     *                 type: string
+     *                 description: "Copie cachée (Cci), invisible des autres destinataires. Même format que « cc »."
+     *                 example: "archive@example.com"
      *               subject:
      *                 type: string
      *                 example: "Sujet du mail"
@@ -610,7 +619,7 @@ module.exports = (app, db, authenticateAdmin) => {
      *         description: Erreur interne lors de l'envoi
      */
     proxyRouter.post('/mail/send', verifyApiKey, async (req, res) => {
-        const { to, subject, content, from_name, from_email, is_raw, attachments, footer1, footer2, footer3, footerColor } = req.body;
+        const { to, cc, bcc, subject, content, from_name, from_email, is_raw, attachments, footer1, footer2, footer3, footerColor } = req.body;
         if (!to || !subject || !content) {
             return res.status(400).json({ error: 'to, subject and content are required' });
         }
@@ -622,9 +631,10 @@ module.exports = (app, db, authenticateAdmin) => {
                     fromEmail: from_email,
                     is_raw: is_raw,
                     attachments: attachments,
+                    cc, bcc,
                     footer1, footer2, footer3, footerColor
                 });
-                console.log(`[PROXY MAIL] Sent for ${req.externalApp.name}: ${to} (Attachments: ${attachments?.length || 0})`);
+                console.log(`[PROXY MAIL] Sent for ${req.externalApp.name}: ${to}${cc ? ` (cc: ${Array.isArray(cc) ? cc.join(', ') : cc})` : ''}${bcc ? ' (+bcc)' : ''} (Attachments: ${attachments?.length || 0})`);
                 res.json({ status: 'success' });
             } else {
                 throw new Error('Mail provider not available');
