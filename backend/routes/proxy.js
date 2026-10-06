@@ -156,7 +156,7 @@ module.exports = (app, db, authenticateAdmin) => {
             else if (path.startsWith('/azure/user')) requiredPermission = 'azure_read';
             else if (path.startsWith('/oracle/query')) requiredPermission = 'oracle_query';
             else if (path.startsWith('/oracle/sync')) requiredPermission = 'oracle_sync';
-            else if (path.startsWith('/o365/messages')) requiredPermission = 'o365_read';
+            else if (path.startsWith('/o365/messages')) requiredPermission = req.method === 'GET' ? 'o365_read' : 'o365_manage';
             else if (path.startsWith('/o365/synced-messages')) requiredPermission = 'o365_read';
             else if (path.startsWith('/o365/harvest')) requiredPermission = 'o365_harvest';
             else if (path.startsWith('/glpi/')) requiredPermission = 'glpi_read';
@@ -646,50 +646,55 @@ module.exports = (app, db, authenticateAdmin) => {
     });
 
     // --- Office 365: Boîte Mail ---
+    // Réglages Graph (tenant, client, secret, boîte par défaut) : table o365_settings. `?mailbox=` permet de viser
+    // une autre boîte que celle configurée (ex. plusieurs boîtes de collecte).
+    async function o365Context(req) {
+        const o365 = await db.get('SELECT * FROM o365_settings WHERE id = 1 AND is_enabled = 1');
+        if (!o365) { const e = new Error('O365 service disabled'); e.status = 503; throw e; }
+        const mailbox = String((req.query && req.query.mailbox) || (req.body && req.body.mailbox) || o365.mailbox || '').trim();
+        if (!mailbox) { const e = new Error('Aucune boîte configurée'); e.status = 503; throw e; }
+        const tokenRes = await axios.post(`https://login.microsoftonline.com/${o365.tenant_id}/oauth2/v2.0/token`, new URLSearchParams({
+            client_id: o365.client_id, grant_type: 'client_credentials',
+            scope: 'https://graph.microsoft.com/.default', client_secret: o365.client_secret
+        }));
+        return { mailbox, token: tokenRes.data.access_token };
+    }
+    const o365Error = (res, error) => {
+        const s = error.response?.status || error.status || 500;
+        const msg = error.response?.data?.error?.message || error.response?.data?.message || error.message;
+        res.status(s >= 400 && s < 500 ? s : 502).json({ error: msg });
+    };
+
     /**
      * @openapi
      * /api/v1/o365/messages:
      *   get:
      *     tags: [Proxy APIs (External)]
      *     summary: Liste les messages d'une boîte Office 365
-     *     security:
-     *       - ApiKeyAuth: []
+     *     security: [ { ApiKeyAuth: [] } ]
+     *     parameters:
+     *       - { in: query, name: mailbox, schema: { type: string }, description: Boîte à lire (défaut : celle configurée) }
+     *       - { in: query, name: unread, schema: { type: string, enum: ['1'] }, description: Ne garder que les non lus }
+     *       - { in: query, name: attachments, schema: { type: string, enum: ['1'] }, description: Ne garder que les messages avec pièces jointes }
+     *       - { in: query, name: top, schema: { type: integer } }
      *     responses:
-     *       200:
-     *         description: Liste des messages récupérée
-     *       401:
-     *         description: Clé API manquante ou invalide
-     *       403:
-     *         description: IP non autorisée ou permissions insuffisantes
+     *       200: { description: Liste des messages }
      */
     proxyRouter.get('/o365/messages', verifyApiKey, async (req, res) => {
         try {
-            const result = await axios.get(`http://localhost:8001/api/o365/messages`, {
-                headers: { 'Authorization': req.headers.authorization } // On rebondit sur l'API interne via redirection (ou appel direct)
-            });
-            res.json(result.data);
-        } catch (error) {
-            // Si l'appel interne échoue car on n'a pas de JWT admin, on doit refaire la logique ici ou exposer la fonction
-            // Pour faire simple et propre, on va appeler la fonction de o365.js si possible ou réeffectuer l'appel Graph
-            // Appel direct à l'API interne avec un token admin "système" ou simplement coder la logique ici.
-            // Option choisie : L'API proxy réeffecute la logique via Microsoft Graph pour être autonome.
-            const o365 = await db.get('SELECT * FROM o365_settings WHERE id = 1 AND is_enabled = 1');
-            if (!o365) return res.status(503).json({ error: 'O365 service disabled' });
-
-            const tokenRes = await axios.post(`https://login.microsoftonline.com/${o365.tenant_id}/oauth2/v2.0/token`, new URLSearchParams({
-                client_id: o365.client_id,
-                grant_type: 'client_credentials',
-                scope: 'https://graph.microsoft.com/.default',
-                client_secret: o365.client_secret
-            }));
-
-            const messagesRes = await axios.get(`https://graph.microsoft.com/v1.0/users/${o365.mailbox}/messages`, {
-                headers: { Authorization: `Bearer ${tokenRes.data.access_token}` },
-                params: { '$top': 50, '$select': 'id,subject,from,receivedDateTime,isRead' }
-            });
-
-            res.json(messagesRes.data.value);
-        }
+            const { mailbox, token } = await o365Context(req);
+            const top = Math.min(Math.max(parseInt(req.query.top, 10) || 50, 1), 200);
+            const params = {
+                '$select': 'id,subject,from,receivedDateTime,isRead,hasAttachments',
+                '$orderby': 'receivedDateTime desc', '$top': top
+            };
+            const filters = [];
+            if (req.query.unread === '1') filters.push('isRead eq false');
+            if (req.query.attachments === '1') filters.push('hasAttachments eq true');
+            if (filters.length) params['$filter'] = filters.join(' and ');
+            const r = await axios.get(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages`, { headers: { Authorization: `Bearer ${token}` }, params });
+            res.json(r.data.value);
+        } catch (error) { o365Error(res, error); }
     });
 
     /**
@@ -698,38 +703,87 @@ module.exports = (app, db, authenticateAdmin) => {
      *   get:
      *     tags: [Proxy APIs (External)]
      *     summary: Lit un message Office 365 spécifique
-     *     security:
-     *       - ApiKeyAuth: []
-     *     parameters:
-     *       - in: path
-     *         name: id
-     *         required: true
-     *         schema:
-     *           type: string
-     *     responses:
-     *       200:
-     *         description: Contenu du message
+     *     security: [ { ApiKeyAuth: [] } ]
      */
     proxyRouter.get('/o365/messages/:id', verifyApiKey, async (req, res) => {
         try {
-            const o365 = await db.get('SELECT * FROM o365_settings WHERE id = 1 AND is_enabled = 1');
-            if (!o365) return res.status(503).json({ error: 'O365 service disabled' });
+            const { mailbox, token } = await o365Context(req);
+            const r = await axios.get(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(req.params.id)}`, { headers: { Authorization: `Bearer ${token}` } });
+            res.json(r.data);
+        } catch (error) { o365Error(res, error); }
+    });
 
-            const tokenRes = await axios.post(`https://login.microsoftonline.com/${o365.tenant_id}/oauth2/v2.0/token`, new URLSearchParams({
-                client_id: o365.client_id,
-                grant_type: 'client_credentials',
-                scope: 'https://graph.microsoft.com/.default',
-                client_secret: o365.client_secret
-            }));
-
-            const messageRes = await axios.get(`https://graph.microsoft.com/v1.0/users/${o365.mailbox}/messages/${req.params.id}`, {
-                headers: { Authorization: `Bearer ${tokenRes.data.access_token}` }
+    /**
+     * @openapi
+     * /api/v1/o365/messages/{id}/attachments:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Liste les pièces jointes d'un message
+     *     security: [ { ApiKeyAuth: [] } ]
+     */
+    proxyRouter.get('/o365/messages/:id/attachments', verifyApiKey, async (req, res) => {
+        try {
+            const { mailbox, token } = await o365Context(req);
+            const r = await axios.get(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(req.params.id)}/attachments`, {
+                headers: { Authorization: `Bearer ${token}` },
+                params: { '$select': 'id,name,size,contentType,isInline' }
             });
+            res.json(r.data.value);
+        } catch (error) { o365Error(res, error); }
+    });
 
-            res.json(messageRes.data);
-        } catch (error) {
-            res.status(500).json({ error: error.message });
-        }
+    /**
+     * @openapi
+     * /api/v1/o365/messages/{id}/attachments/{attachmentId}:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Télécharge le contenu d'une pièce jointe (base64)
+     *     security: [ { ApiKeyAuth: [] } ]
+     *     responses:
+     *       200: { description: "{ id, name, contentType, size, contentBytes }" }
+     */
+    proxyRouter.get('/o365/messages/:id/attachments/:attachmentId', verifyApiKey, async (req, res) => {
+        try {
+            const { mailbox, token } = await o365Context(req);
+            const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(req.params.id)}/attachments/${encodeURIComponent(req.params.attachmentId)}`;
+            const meta = await axios.get(base, { headers: { Authorization: `Bearer ${token}` }, params: { '$select': 'id,name,size,contentType' } });
+            const bin = await axios.get(`${base}/$value`, { headers: { Authorization: `Bearer ${token}` }, responseType: 'arraybuffer', maxContentLength: 50 * 1024 * 1024, maxBodyLength: Infinity });
+            res.json({ id: meta.data.id, name: meta.data.name, contentType: meta.data.contentType, size: meta.data.size, contentBytes: Buffer.from(bin.data).toString('base64') });
+        } catch (error) { o365Error(res, error); }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/o365/messages/{id}:
+     *   patch:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Marque un message lu / non lu
+     *     security: [ { ApiKeyAuth: [] } ]
+     */
+    proxyRouter.patch('/o365/messages/:id', verifyApiKey, async (req, res) => {
+        try {
+            const { mailbox, token } = await o365Context(req);
+            const isRead = req.body?.isRead !== false;
+            await axios.patch(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(req.params.id)}`,
+                { isRead }, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } });
+            res.json({ ok: true, isRead });
+        } catch (error) { o365Error(res, error); }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/o365/messages/{id}:
+     *   delete:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Supprime un message (Éléments supprimés)
+     *     security: [ { ApiKeyAuth: [] } ]
+     */
+    proxyRouter.delete('/o365/messages/:id', verifyApiKey, async (req, res) => {
+        try {
+            const { mailbox, token } = await o365Context(req);
+            await axios.delete(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(req.params.id)}`, { headers: { Authorization: `Bearer ${token}` } });
+            res.json({ ok: true });
+        } catch (error) { o365Error(res, error); }
     });
 
     /**
