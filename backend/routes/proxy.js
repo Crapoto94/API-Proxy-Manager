@@ -1373,6 +1373,19 @@ module.exports = (app, db, authenticateAdmin) => {
      *               temperature:
      *                 type: number
      *                 description: "Température de génération, de 0 (déterministe) à 1. Défaut 0.3."
+     *               pdf_mode:
+     *                 type: string
+     *                 enum: [auto, complet, rapide, texte]
+     *                 description: >-
+     *                   Lecture des PDF joints. complet (défaut) : chaque page rendue en image. rapide : pour un PDF numérique (couche texte), texte de toutes les pages
+     *                   + image de la première et des deux dernières pages seulement (bien plus rapide). texte : texte seul. auto : rapide si le PDF est numérique, complet si c'est un scan.
+     *                   Un PDF scanné est toujours lu en image. La réponse contient "lecture" (mode effectivement appliqué par pièce).
+     *               pdf_scale:
+     *                 type: number
+     *                 description: "Échelle de rendu des pages PDF (0.8 à 3, défaut 1.6 ≈ 115 dpi)."
+     *               image_max_px:
+     *                 type: integer
+     *                 description: "Côté maximal en pixels des images jointes (600 à 4000, défaut 1800) : les grandes photos sont réduites."
      *               providers:
      *                 type: array
      *                 items: { type: string, enum: [groq, nvidia, ollama, vllm] }
@@ -1392,11 +1405,11 @@ module.exports = (app, db, authenticateAdmin) => {
         const { prompt, attachments, providers } = body || {};
         const mt = Number(body?.max_tokens); const temp = Number(body?.temperature);
         if (!prompt || !String(prompt).trim()) throw Object.assign(new Error('Le champ prompt est requis'), { status: 400 });
-        const { images, texte, warnings } = await prepareAttachments(attachments);
+        const { images, texte, warnings, lecture } = await prepareAttachments(attachments, { pdfMode: body?.pdf_mode, pdfScale: Number(body?.pdf_scale), imageMaxPx: Number(body?.image_max_px) });
         const complet = texte ? `${prompt}
 
 ${texte}` : String(prompt);
-        return { prompt: complet, options: { images, providers: Array.isArray(providers) ? providers : null, maxTokens: Number.isFinite(mt) && mt > 0 ? mt : null, temperature: body?.temperature !== undefined && body?.temperature !== null && Number.isFinite(temp) ? Math.min(1, Math.max(0, temp)) : 0.3 }, warnings, nbPieces: Array.isArray(attachments) ? attachments.length : 0 };
+        return { prompt: complet, options: { images, providers: Array.isArray(providers) ? providers : null, maxTokens: Number.isFinite(mt) && mt > 0 ? mt : null, temperature: body?.temperature !== undefined && body?.temperature !== null && Number.isFinite(temp) ? Math.min(1, Math.max(0, temp)) : 0.3 }, warnings, lecture, nbPieces: Array.isArray(attachments) ? attachments.length : 0 };
     }
 
     proxyRouter.post('/ai/query', verifyApiKey, async (req, res) => {
@@ -1405,7 +1418,7 @@ ${texte}` : String(prompt);
         try {
             const result = await app.locals.runAiQuery(prep.prompt, req.body.model, prep.options);
             console.log(`[PROXY AI] Query for ${req.externalApp.name} answered by ${result.provider_label} (${result.model})${prep.nbPieces ? ` — ${prep.nbPieces} pièce(s) jointe(s), ${prep.options.images.length} image(s)` : ''}`);
-            res.json({ status: 'success', ...result, ...(prep.warnings.length ? { warnings: prep.warnings } : {}) });
+            res.json({ status: 'success', ...result, ...(prep.warnings.length ? { warnings: prep.warnings } : {}), ...(prep.lecture.length ? { lecture: prep.lecture } : {}) });
         } catch (error) {
             res.status(503).json({ error: error.message });
         }
@@ -1452,6 +1465,19 @@ ${texte}` : String(prompt);
      *               temperature:
      *                 type: number
      *                 description: "Température de génération, de 0 (déterministe) à 1. Défaut 0.3."
+     *               pdf_mode:
+     *                 type: string
+     *                 enum: [auto, complet, rapide, texte]
+     *                 description: >-
+     *                   Lecture des PDF joints. complet (défaut) : chaque page rendue en image. rapide : pour un PDF numérique (couche texte), texte de toutes les pages
+     *                   + image de la première et des deux dernières pages seulement (bien plus rapide). texte : texte seul. auto : rapide si le PDF est numérique, complet si c'est un scan.
+     *                   Un PDF scanné est toujours lu en image. La réponse contient "lecture" (mode effectivement appliqué par pièce).
+     *               pdf_scale:
+     *                 type: number
+     *                 description: "Échelle de rendu des pages PDF (0.8 à 3, défaut 1.6 ≈ 115 dpi)."
+     *               image_max_px:
+     *                 type: integer
+     *                 description: "Côté maximal en pixels des images jointes (600 à 4000, défaut 1800) : les grandes photos sont réduites."
      *               providers:
      *                 type: array
      *                 items: { type: string, enum: [groq, nvidia, ollama, vllm] }
@@ -1469,7 +1495,7 @@ ${texte}` : String(prompt);
         try { prep = await preparerRequeteIa(req.body); } catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
         try {
             const queryId = app.locals.startAiQueryAsync(prep.prompt, req.body.model, prep.options);
-            res.json({ queryId, ...(prep.warnings.length ? { warnings: prep.warnings } : {}) });
+            res.json({ queryId, ...(prep.warnings.length ? { warnings: prep.warnings } : {}), ...(prep.lecture.length ? { lecture: prep.lecture } : {}) });
         } catch (error) {
             res.status(500).json({ error: error.message });
         }
