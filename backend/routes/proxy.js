@@ -3,6 +3,7 @@ const axios = require('axios');
 const crypto = require('crypto');
 const multer = require('multer');
 const { fuzzyAccentLDAPValue, decodeEntryAttrs, decodeLDAPString } = require('./ldap_helpers');
+const { prepareAttachments } = require('./ai-attachments');
 
 /**
  * @openapi
@@ -1354,6 +1355,24 @@ module.exports = (app, db, authenticateAdmin) => {
      *               model:
      *                 type: string
      *                 description: "Identifiant du modèle souhaité (voir /api/v1/ai/models). Optionnel : le modèle par défaut est utilisé sinon."
+     *               attachments:
+     *                 type: array
+     *                 maxItems: 5
+     *                 description: >-
+     *                   Pièces jointes à analyser (OCR / lecture par un modèle multimodal) : images PNG/JPEG/WebP/GIF ou PDF (chaque page, 8 max,
+     *                   est rendue en image ; la couche texte éventuelle est ajoutée au prompt). Taille totale 20 Mo max. Le type est reconnu par le contenu.
+     *                 items:
+     *                   type: object
+     *                   required: [data]
+     *                   properties:
+     *                     name: { type: string, description: "Nom du fichier (informatif)" }
+     *                     data: { type: string, description: "Contenu encodé en base64 (une data URL est acceptée)" }
+     *               providers:
+     *                 type: array
+     *                 items: { type: string, enum: [groq, nvidia, ollama, vllm] }
+     *                 description: >-
+     *                   Liste blanche de fournisseurs autorisés pour cette requête (ex. ["ollama","vllm"] pour des données personnelles) :
+     *                   aucune bascule vers un autre fournisseur. Défaut : tous.
      *     responses:
      *       200:
      *         description: Réponse du modèle IA
@@ -1362,15 +1381,24 @@ module.exports = (app, db, authenticateAdmin) => {
      *       503:
      *         description: Aucun modèle IA disponible ou tous les modèles ont échoué
      */
+    // Prépare prompt + pièces jointes : images transmises, pages de PDF rendues, couche texte ajoutée au prompt.
+    async function preparerRequeteIa(body) {
+        const { prompt, attachments, providers } = body || {};
+        if (!prompt || !String(prompt).trim()) throw Object.assign(new Error('Le champ prompt est requis'), { status: 400 });
+        const { images, texte, warnings } = await prepareAttachments(attachments);
+        const complet = texte ? `${prompt}
+
+${texte}` : String(prompt);
+        return { prompt: complet, options: { images, providers: Array.isArray(providers) ? providers : null }, warnings, nbPieces: Array.isArray(attachments) ? attachments.length : 0 };
+    }
+
     proxyRouter.post('/ai/query', verifyApiKey, async (req, res) => {
-        const { prompt, model } = req.body;
-        if (!prompt || !String(prompt).trim()) {
-            return res.status(400).json({ error: 'Le champ prompt est requis' });
-        }
+        let prep;
+        try { prep = await preparerRequeteIa(req.body); } catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
         try {
-            const result = await app.locals.runAiQuery(prompt, model);
-            console.log(`[PROXY AI] Query for ${req.externalApp.name} answered by ${result.provider_label} (${result.model})`);
-            res.json({ status: 'success', ...result });
+            const result = await app.locals.runAiQuery(prep.prompt, req.body.model, prep.options);
+            console.log(`[PROXY AI] Query for ${req.externalApp.name} answered by ${result.provider_label} (${result.model})${prep.nbPieces ? ` — ${prep.nbPieces} pièce(s) jointe(s), ${prep.options.images.length} image(s)` : ''}`);
+            res.json({ status: 'success', ...result, ...(prep.warnings.length ? { warnings: prep.warnings } : {}) });
         } catch (error) {
             res.status(503).json({ error: error.message });
         }
@@ -1399,20 +1427,36 @@ module.exports = (app, db, authenticateAdmin) => {
      *               model:
      *                 type: string
      *                 description: "Identifiant du modèle souhaité (voir /api/v1/ai/models). Optionnel."
+     *               attachments:
+     *                 type: array
+     *                 maxItems: 5
+     *                 description: >-
+     *                   Pièces jointes à analyser (OCR / lecture par un modèle multimodal) : images PNG/JPEG/WebP/GIF ou PDF (chaque page, 8 max,
+     *                   est rendue en image ; la couche texte éventuelle est ajoutée au prompt). Taille totale 20 Mo max. Le type est reconnu par le contenu.
+     *                 items:
+     *                   type: object
+     *                   required: [data]
+     *                   properties:
+     *                     name: { type: string, description: "Nom du fichier (informatif)" }
+     *                     data: { type: string, description: "Contenu encodé en base64 (une data URL est acceptée)" }
+     *               providers:
+     *                 type: array
+     *                 items: { type: string, enum: [groq, nvidia, ollama, vllm] }
+     *                 description: >-
+     *                   Liste blanche de fournisseurs autorisés pour cette requête (ex. ["ollama","vllm"] pour des données personnelles) :
+     *                   aucune bascule vers un autre fournisseur. Défaut : tous.
      *     responses:
      *       200:
      *         description: queryId à poller
      *       400:
      *         description: Prompt manquant
      */
-    proxyRouter.post('/ai/query-async', verifyApiKey, (req, res) => {
-        const { prompt, model } = req.body;
-        if (!prompt || !String(prompt).trim()) {
-            return res.status(400).json({ error: 'Le champ prompt est requis' });
-        }
+    proxyRouter.post('/ai/query-async', verifyApiKey, async (req, res) => {
+        let prep;
+        try { prep = await preparerRequeteIa(req.body); } catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
         try {
-            const queryId = app.locals.startAiQueryAsync(prompt, model);
-            res.json({ queryId });
+            const queryId = app.locals.startAiQueryAsync(prep.prompt, req.body.model, prep.options);
+            res.json({ queryId, ...(prep.warnings.length ? { warnings: prep.warnings } : {}) });
         } catch (error) {
             res.status(500).json({ error: error.message });
         }

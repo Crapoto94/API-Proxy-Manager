@@ -4,6 +4,7 @@
     "dev": "node server.js"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^0.1.65",
     "axios": "^1.13.6",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
@@ -16,6 +17,7 @@
     "nodemailer-brevo-transport": "^2.2.1",
     "nodemailer-sendinblue-transport": "^2.0.1",
     "oracledb": "^6.10.0",
+    "pdfjs-dist": "^4.10.38",
     "sqlite": "^5.1.1",
     "sqlite3": "^6.0.1",
     "swagger-jsdoc": "^6.2.8",

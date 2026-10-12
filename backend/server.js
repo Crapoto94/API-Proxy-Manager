@@ -68,7 +68,8 @@ const swaggerOptions = {
 const swaggerDocs = swaggerJsDoc(swaggerOptions);
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+// 30 Mo : les requêtes IA peuvent embarquer des pièces jointes (images / PDF) en base64.
+app.use(express.json({ limit: '30mb' }));
 app.use('/magapp_img', express.static(path.join(__dirname, 'magapp_img')));
 
 // Middleware d'authentification simple (à affiner)
