@@ -1359,7 +1359,7 @@ module.exports = (app, db, authenticateAdmin) => {
      *                 type: array
      *                 maxItems: 5
      *                 description: >-
-     *                   Pièces jointes à analyser (OCR / lecture par un modèle multimodal) : images PNG/JPEG/WebP/GIF ou PDF (chaque page, 8 max,
+     *                   Pièces jointes à analyser (OCR / lecture par un modèle multimodal) : images PNG/JPEG/WebP/GIF ou PDF (chaque page, 40 max par défaut,
      *                   est rendue en image ; la couche texte éventuelle est ajoutée au prompt). Taille totale 20 Mo max. Le type est reconnu par le contenu.
      *                 items:
      *                   type: object
@@ -1431,7 +1431,7 @@ ${texte}` : String(prompt);
      *                 type: array
      *                 maxItems: 5
      *                 description: >-
-     *                   Pièces jointes à analyser (OCR / lecture par un modèle multimodal) : images PNG/JPEG/WebP/GIF ou PDF (chaque page, 8 max,
+     *                   Pièces jointes à analyser (OCR / lecture par un modèle multimodal) : images PNG/JPEG/WebP/GIF ou PDF (chaque page, 40 max par défaut,
      *                   est rendue en image ; la couche texte éventuelle est ajoutée au prompt). Taille totale 20 Mo max. Le type est reconnu par le contenu.
      *                 items:
      *                   type: object

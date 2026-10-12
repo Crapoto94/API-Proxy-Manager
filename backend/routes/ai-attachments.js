@@ -1,12 +1,13 @@
 // Pièces jointes des requêtes IA (/api/v1/ai/query, /api/v1/ai/query-async) : images et PDF envoyés en base64
 // pour que le modèle (multimodal) fasse lui-même l'OCR / la lecture du document.
 //   - image/png, image/jpeg, image/webp, image/gif : transmises telles quelles (data URL, format image_url OpenAI-compatible) ;
-//   - application/pdf : chaque page (jusqu'à MAX_PDF_PAGES) est rendue en PNG (pdfjs-dist + @napi-rs/canvas) ; la couche texte du PDF,
+//   - application/pdf : chaque page (jusqu'à MAX_PDF_PAGES, 40 par défaut) est rendue en PNG (pdfjs-dist + @napi-rs/canvas) ; la couche texte du PDF,
 //     quand elle existe, est aussi extraite et jointe au prompt (aide le modèle, notamment pour les chiffres). Si le rendu des pages est
 //     impossible (module canvas absent), seule la couche texte est transmise et un avertissement est renvoyé.
 const MAX_ATTACHMENTS = 5;
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
-const MAX_PDF_PAGES = 8;
+// Pages rendues par PDF : 40 par défaut (un bail complet avec annexes), réglable par la variable d'environnement AI_MAX_PDF_PAGES.
+const MAX_PDF_PAGES = Math.max(1, parseInt(process.env.AI_MAX_PDF_PAGES || '40', 10) || 40);
 const PDF_SCALE = 1.6;               // ≈ 115 dpi : lisible pour de l'OCR sans exploser la taille des images
 const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
 
