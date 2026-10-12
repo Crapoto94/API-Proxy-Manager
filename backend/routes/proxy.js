@@ -1367,6 +1367,12 @@ module.exports = (app, db, authenticateAdmin) => {
      *                   properties:
      *                     name: { type: string, description: "Nom du fichier (informatif)" }
      *                     data: { type: string, description: "Contenu encodé en base64 (une data URL est acceptée)" }
+     *               max_tokens:
+     *                 type: integer
+     *                 description: "Plafond de longueur de la réponse (64 à 16000 jetons, sans dépasser le réglage de l'administrateur). Une sortie courte (ex. JSON) est bien plus rapide."
+     *               temperature:
+     *                 type: number
+     *                 description: "Température de génération, de 0 (déterministe) à 1. Défaut 0.3."
      *               providers:
      *                 type: array
      *                 items: { type: string, enum: [groq, nvidia, ollama, vllm] }
@@ -1384,12 +1390,13 @@ module.exports = (app, db, authenticateAdmin) => {
     // Prépare prompt + pièces jointes : images transmises, pages de PDF rendues, couche texte ajoutée au prompt.
     async function preparerRequeteIa(body) {
         const { prompt, attachments, providers } = body || {};
+        const mt = Number(body?.max_tokens); const temp = Number(body?.temperature);
         if (!prompt || !String(prompt).trim()) throw Object.assign(new Error('Le champ prompt est requis'), { status: 400 });
         const { images, texte, warnings } = await prepareAttachments(attachments);
         const complet = texte ? `${prompt}
 
 ${texte}` : String(prompt);
-        return { prompt: complet, options: { images, providers: Array.isArray(providers) ? providers : null }, warnings, nbPieces: Array.isArray(attachments) ? attachments.length : 0 };
+        return { prompt: complet, options: { images, providers: Array.isArray(providers) ? providers : null, maxTokens: Number.isFinite(mt) && mt > 0 ? mt : null, temperature: body?.temperature !== undefined && body?.temperature !== null && Number.isFinite(temp) ? Math.min(1, Math.max(0, temp)) : 0.3 }, warnings, nbPieces: Array.isArray(attachments) ? attachments.length : 0 };
     }
 
     proxyRouter.post('/ai/query', verifyApiKey, async (req, res) => {
@@ -1439,6 +1446,12 @@ ${texte}` : String(prompt);
      *                   properties:
      *                     name: { type: string, description: "Nom du fichier (informatif)" }
      *                     data: { type: string, description: "Contenu encodé en base64 (une data URL est acceptée)" }
+     *               max_tokens:
+     *                 type: integer
+     *                 description: "Plafond de longueur de la réponse (64 à 16000 jetons, sans dépasser le réglage de l'administrateur). Une sortie courte (ex. JSON) est bien plus rapide."
+     *               temperature:
+     *                 type: number
+     *                 description: "Température de génération, de 0 (déterministe) à 1. Défaut 0.3."
      *               providers:
      *                 type: array
      *                 items: { type: string, enum: [groq, nvidia, ollama, vllm] }

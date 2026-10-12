@@ -129,14 +129,14 @@ function streamToString(stream) {
  * permet de suivre une génération en temps réel (cf. startAiQueryAsync / query-progress)
  * au lieu d'attendre la réponse complète comme le fait l'appel classique.
  */
-async function callOpenAiCompatible(apiUrl, apiKey, model, prompt, timeout, providerLabel, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null, images = []) {
+async function callOpenAiCompatible(apiUrl, apiKey, model, prompt, timeout, providerLabel, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null, images = [], temperature = 0.3) {
     const useStream = typeof onChunk === 'function';
     try {
         const response = await axios.post(apiUrl, {
             model,
             // Avec pièces jointes (images / pages de PDF rendues) : contenu multimodal au format OpenAI (image_url en data URL) ; sinon texte seul.
             messages: [{ role: 'user', content: images.length ? [{ type: 'text', text: prompt }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] : prompt }],
-            temperature: 0.3,
+            temperature,
             max_tokens: maxTokens,
             stream: useStream
         }, {
@@ -230,35 +230,35 @@ async function callOpenAiCompatible(apiUrl, apiKey, model, prompt, timeout, prov
     }
 }
 
-async function callGroqChat(prompt, apiKey, model, timeout = 60000, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null, images = []) {
+async function callGroqChat(prompt, apiKey, model, timeout = 60000, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null, images = [], temperature = 0.3) {
     if (!apiKey) throw new Error('Clé API Groq non configurée');
-    return callOpenAiCompatible(GROQ_API_URL, apiKey, model, prompt, timeout, 'Groq', maxTokens, onChunk, images);
+    return callOpenAiCompatible(GROQ_API_URL, apiKey, model, prompt, timeout, 'Groq', maxTokens, onChunk, images, temperature);
 }
 
-async function callNvidiaChat(prompt, apiKey, model, timeout = 60000, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null, images = []) {
+async function callNvidiaChat(prompt, apiKey, model, timeout = 60000, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null, images = [], temperature = 0.3) {
     if (!apiKey) throw new Error('Clé API NVIDIA non configurée');
-    return callOpenAiCompatible(NVIDIA_API_URL, apiKey, model, prompt, timeout, 'NVIDIA', maxTokens, onChunk, images);
+    return callOpenAiCompatible(NVIDIA_API_URL, apiKey, model, prompt, timeout, 'NVIDIA', maxTokens, onChunk, images, temperature);
 }
 
-async function callOllamaChat(prompt, url, model, timeout = 120000, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null, images = []) {
+async function callOllamaChat(prompt, url, model, timeout = 120000, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null, images = [], temperature = 0.3) {
     if (!url) throw new Error("URL de l'instance Ollama non configurée");
     const ollamaApiUrl = url.replace(/\/$/, '') + '/v1/chat/completions';
     // Ollama n'exige pas de clé API — un jeton factice suffit pour le header Authorization.
-    return callOpenAiCompatible(ollamaApiUrl, 'ollama', model, prompt, timeout, 'Ollama', maxTokens, onChunk, images);
+    return callOpenAiCompatible(ollamaApiUrl, 'ollama', model, prompt, timeout, 'Ollama', maxTokens, onChunk, images, temperature);
 }
 
-async function callVllmChat(prompt, url, model, timeout = 120000, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null, images = []) {
+async function callVllmChat(prompt, url, model, timeout = 120000, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null, images = [], temperature = 0.3) {
     if (!url) throw new Error("URL de l'instance vLLM (Qwen3-Omni) non configurée");
     const vllmApiUrl = normalizeApiBase(url) + '/chat/completions';
     // vLLM n'exige pas de clé API par défaut — jeton factice 'EMPTY' (cf. LOCAL_DUMMY_API_KEY).
-    return callOpenAiCompatible(vllmApiUrl, LOCAL_DUMMY_API_KEY, model, prompt, timeout, 'vLLM (local)', maxTokens, onChunk, images);
+    return callOpenAiCompatible(vllmApiUrl, LOCAL_DUMMY_API_KEY, model, prompt, timeout, 'vLLM (local)', maxTokens, onChunk, images, temperature);
 }
 
-async function callProviderChat(provider, prompt, settings, model, timeout, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null, images = []) {
-    if (provider === 'groq') return callGroqChat(prompt, settings.groq_api_key, model, timeout, maxTokens, onChunk, images);
-    if (provider === 'nvidia') return callNvidiaChat(prompt, settings.nvidia_api_key, model, timeout, maxTokens, onChunk, images);
-    if (provider === 'ollama') return callOllamaChat(prompt, settings.ollama_url, model, timeout, maxTokens, onChunk, images);
-    if (provider === 'vllm') return callVllmChat(prompt, settings.vllm_url, model, timeout, maxTokens, onChunk, images);
+async function callProviderChat(provider, prompt, settings, model, timeout, maxTokens = DEFAULT_MAX_TOKENS, onChunk = null, images = [], temperature = 0.3) {
+    if (provider === 'groq') return callGroqChat(prompt, settings.groq_api_key, model, timeout, maxTokens, onChunk, images, temperature);
+    if (provider === 'nvidia') return callNvidiaChat(prompt, settings.nvidia_api_key, model, timeout, maxTokens, onChunk, images, temperature);
+    if (provider === 'ollama') return callOllamaChat(prompt, settings.ollama_url, model, timeout, maxTokens, onChunk, images, temperature);
+    if (provider === 'vllm') return callVllmChat(prompt, settings.vllm_url, model, timeout, maxTokens, onChunk, images, temperature);
     if (provider === 'whisper') {
         throw new Error("Faster-Whisper est un modèle de transcription audio (STT) : utilisez /api/v1/ai/transcribe");
     }
@@ -535,7 +535,7 @@ async function testAllModels(db) {
  * chaque autre fournisseur) et les paramètres de requête (timeout, max_tokens) — factorisé
  * entre runAiQuery (synchrone) et startAiQueryAsync (asynchrone + progression).
  */
-async function resolveQueryPlan(db, preferredModelId, providers = null) {
+async function resolveQueryPlan(db, preferredModelId, providers = null, maxTokensDemande = null) {
     const settings = await db.get('SELECT * FROM ai_settings WHERE id = 1');
     const models = await getModelsWithStatus(db);
     // Seuls les modèles capables de chat participent au flux /ai/query — Faster-Whisper
@@ -582,7 +582,9 @@ async function resolveQueryPlan(db, preferredModelId, providers = null) {
         ? settings.max_tokens
         : DEFAULT_MAX_TOKENS;
 
-    return { settings, ordered, timeout, maxTokens };
+    // max_tokens demandé par l'appelant (64 à 16 000) : plafonne la sortie, donc la durée, sans dépasser le réglage de l'administrateur
+    const demande = Number.isFinite(maxTokensDemande) && maxTokensDemande >= 64 ? Math.min(Math.round(maxTokensDemande), 16000, maxTokens) : maxTokens;
+    return { settings, ordered, timeout, maxTokens: demande };
 }
 
 /**
@@ -591,13 +593,13 @@ async function resolveQueryPlan(db, preferredModelId, providers = null) {
  * d'échec (panne, quota dépassé, clé invalide...). Port JS de run_ai_analysis (analyse-mail
  * app.py:3895).
  */
-async function runAiQuery(db, prompt, preferredModelId, { images = [], providers = null } = {}) {
-    const { settings, ordered, timeout, maxTokens } = await resolveQueryPlan(db, preferredModelId, providers);
+async function runAiQuery(db, prompt, preferredModelId, { images = [], providers = null, maxTokens: maxTokensDemande = null, temperature = 0.3 } = {}) {
+    const { settings, ordered, timeout, maxTokens } = await resolveQueryPlan(db, preferredModelId, providers, maxTokensDemande);
 
     const errors = [];
     for (const m of ordered) {
         try {
-            const response = await callProviderChat(m.provider, prompt, settings, m.model, timeout, maxTokens, null, images);
+            const response = await callProviderChat(m.provider, prompt, settings, m.model, timeout, maxTokens, null, images, temperature);
             return { provider: m.provider, provider_label: m.provider_label, model: m.model, model_name: m.name, response };
         } catch (error) {
             errors.push(`${m.provider_label} (${m.model}) : ${error.message}`);
@@ -632,7 +634,7 @@ function pruneQueryJobs() {
  * reçus, on ne rejoue pas le prompt sur un autre fournisseur pour ne pas produire une
  * réponse incohérente à mi-chemin).
  */
-function startAiQueryAsync(db, prompt, preferredModelId, { images = [], providers = null } = {}) {
+function startAiQueryAsync(db, prompt, preferredModelId, { images = [], providers = null, maxTokens: maxTokensDemande = null, temperature = 0.3 } = {}) {
     const queryId = `q_${Date.now()}_${Math.round(Math.random() * 1e6)}`;
     queryJobs[queryId] = { status: 'running', tokensReceived: 0, charsReceived: 0, createdAt: Date.now() };
     pruneQueryJobs();
@@ -640,7 +642,7 @@ function startAiQueryAsync(db, prompt, preferredModelId, { images = [], provider
     (async () => {
         const job = queryJobs[queryId];
         try {
-            const { settings, ordered, timeout, maxTokens } = await resolveQueryPlan(db, preferredModelId, providers);
+            const { settings, ordered, timeout, maxTokens } = await resolveQueryPlan(db, preferredModelId, providers, maxTokensDemande);
             const errors = [];
             let succeeded = false;
 
@@ -658,7 +660,7 @@ function startAiQueryAsync(db, prompt, preferredModelId, { images = [], provider
                         job.provider_label = m.provider_label;
                         job.model = m.model;
                     };
-                    const response = await callProviderChat(m.provider, prompt, settings, m.model, timeout, maxTokens, onChunk, images);
+                    const response = await callProviderChat(m.provider, prompt, settings, m.model, timeout, maxTokens, onChunk, images, temperature);
                     job.status = 'completed';
                     job.response = response;
                     job.provider = m.provider;
