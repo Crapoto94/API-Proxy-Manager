@@ -160,6 +160,7 @@ module.exports = (app, db, authenticateAdmin) => {
             else if (path.startsWith('/o365/messages')) requiredPermission = req.method === 'GET' ? 'o365_read' : 'o365_manage';
             else if (path.startsWith('/o365/synced-messages')) requiredPermission = 'o365_read';
             else if (path.startsWith('/o365/harvest')) requiredPermission = 'o365_harvest';
+            else if (path.startsWith('/o365/calendar')) requiredPermission = 'o365_calendar';
             else if (path.startsWith('/glpi/')) requiredPermission = 'glpi_read';
             else if (path.startsWith('/ai/query')) requiredPermission = 'ai_query';
             else if (path.startsWith('/ai/transcribe')) requiredPermission = 'ai_transcribe';
@@ -665,6 +666,97 @@ module.exports = (app, db, authenticateAdmin) => {
         const msg = error.response?.data?.error?.message || error.response?.data?.message || error.message;
         res.status(s >= 400 && s < 500 ? s : 502).json({ error: msg });
     };
+
+    // --- Office 365 : événements d'agenda (création / suppression dans l'agenda d'une boîte) ---
+    // La boîte visée doit être donnée explicitement (`mailbox`) : on n'écrit jamais dans la boîte de collecte configurée par défaut.
+    // Seuls les champs ci-dessous sont transmis à Microsoft Graph ; le droit d'application Calendars.ReadWrite est requis côté Entra ID.
+    const CAL_SHOW_AS = ['free', 'tentative', 'busy', 'oof', 'workingElsewhere'];
+    const CAL_SENSITIVITY = ['normal', 'personal', 'private', 'confidential'];
+    const calMailbox = (req) => {
+        const mailbox = String((req.body && req.body.mailbox) || (req.query && req.query.mailbox) || '').trim();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mailbox)) { const e = new Error('mailbox : adresse e-mail de la boîte à modifier obligatoire'); e.status = 400; throw e; }
+        return mailbox;
+    };
+    const calTime = (v, name) => {
+        if (!v || typeof v.dateTime !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(v.dateTime) || typeof v.timeZone !== 'string' || !v.timeZone.trim()) {
+            const e = new Error(`${name} : { dateTime: 'AAAA-MM-JJTHH:MM:SS', timeZone } obligatoire`); e.status = 400; throw e;
+        }
+        return { dateTime: v.dateTime, timeZone: v.timeZone.trim() };
+    };
+
+    /**
+     * @openapi
+     * /api/v1/o365/calendar/events:
+     *   post:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Crée un événement dans l'agenda d'une boîte Office 365
+     *     description: Permission `o365_calendar`. La boîte (`mailbox`) est obligatoire. Seuls subject, start, end, isAllDay, showAs, sensitivity, isReminderOn et categories sont transmis à Microsoft Graph.
+     *     security: [ { ApiKeyAuth: [] } ]
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [mailbox, subject, start, end]
+     *             properties:
+     *               mailbox: { type: string, example: prenom.nom@ville.fr }
+     *               subject: { type: string, example: ABSENT }
+     *               start: { type: object, properties: { dateTime: { type: string, example: '2026-11-16T00:00:00' }, timeZone: { type: string, example: Europe/Paris } } }
+     *               end: { type: object, properties: { dateTime: { type: string, example: '2026-11-17T00:00:00' }, timeZone: { type: string, example: Europe/Paris } } }
+     *               isAllDay: { type: boolean }
+     *               showAs: { type: string, enum: [free, tentative, busy, oof, workingElsewhere] }
+     *               sensitivity: { type: string, enum: [normal, personal, private, confidential] }
+     *               isReminderOn: { type: boolean }
+     *               categories: { type: array, items: { type: string } }
+     *     responses:
+     *       201: { description: 'Événement créé : { id }' }
+     *       400: { description: Paramètres invalides }
+     *       403: { description: Permission o365_calendar manquante }
+     */
+    proxyRouter.post('/o365/calendar/events', verifyApiKey, async (req, res) => {
+        try {
+            const mailbox = calMailbox(req);
+            const b = req.body || {};
+            const subject = String(b.subject || '').trim();
+            if (!subject || subject.length > 255) { const e = new Error('subject : 1 à 255 caractères'); e.status = 400; throw e; }
+            if (b.showAs !== undefined && !CAL_SHOW_AS.includes(b.showAs)) { const e = new Error(`showAs : ${CAL_SHOW_AS.join(', ')}`); e.status = 400; throw e; }
+            if (b.sensitivity !== undefined && !CAL_SENSITIVITY.includes(b.sensitivity)) { const e = new Error(`sensitivity : ${CAL_SENSITIVITY.join(', ')}`); e.status = 400; throw e; }
+            const event = { subject, start: calTime(b.start, 'start'), end: calTime(b.end, 'end'), isAllDay: b.isAllDay === true, isReminderOn: b.isReminderOn === true };
+            if (b.showAs) event.showAs = b.showAs;
+            if (b.sensitivity) event.sensitivity = b.sensitivity;
+            if (Array.isArray(b.categories)) event.categories = b.categories.map(String).slice(0, 10);
+            const { token } = await o365Context({ query: { mailbox }, body: {} });
+            const r = await axios.post(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/events`, event,
+                { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } });
+            res.status(201).json({ id: r.data.id });
+        } catch (error) { o365Error(res, error); }
+    });
+
+    /**
+     * @openapi
+     * /api/v1/o365/calendar/events/{id}:
+     *   delete:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Supprime un événement de l'agenda d'une boîte Office 365
+     *     description: Permission `o365_calendar`. La boîte (`mailbox`) est obligatoire. Un événement déjà supprimé répond 404.
+     *     security: [ { ApiKeyAuth: [] } ]
+     *     parameters:
+     *       - { in: path, name: id, required: true, schema: { type: string } }
+     *       - { in: query, name: mailbox, required: true, schema: { type: string } }
+     *     responses:
+     *       204: { description: Événement supprimé }
+     *       404: { description: Événement introuvable }
+     */
+    proxyRouter.delete('/o365/calendar/events/:id', verifyApiKey, async (req, res) => {
+        try {
+            const mailbox = calMailbox(req);
+            const { token } = await o365Context({ query: { mailbox }, body: {} });
+            await axios.delete(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/events/${encodeURIComponent(req.params.id)}`,
+                { headers: { Authorization: `Bearer ${token}` } });
+            res.status(204).end();
+        } catch (error) { o365Error(res, error); }
+    });
 
     /**
      * @openapi

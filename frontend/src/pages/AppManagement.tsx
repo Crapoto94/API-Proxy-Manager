@@ -17,7 +17,8 @@ import {
   Power,
   Database,
   Bot,
-  Mic
+  Mic,
+  CalendarDays
 } from 'lucide-react';
 import { API_BASE_URL } from '../config';
 
@@ -42,6 +43,7 @@ const AVAILABLE_PERMISSIONS = [
     { id: 'oracle_sync', name: 'Synchro Oracle', icon: RefreshCw },
     { id: 'o365_read', name: 'Lecture O365', icon: Mail },
     { id: 'o365_harvest', name: 'Moissonnage O365', icon: RefreshCw },
+    { id: 'o365_calendar', name: 'Agenda O365 (événements)', icon: CalendarDays },
     { id: 'glpi_read', name: 'Stats GLPI', icon: Activity },
     { id: 'ai_read', name: 'Liste modèles IA', icon: Bot },
     { id: 'ai_query', name: 'Interrogation IA', icon: Bot },
