@@ -672,6 +672,17 @@ module.exports = (app, db, authenticateAdmin) => {
     // Seuls les champs ci-dessous sont transmis à Microsoft Graph ; le droit d'application Calendars.ReadWrite est requis côté Entra ID.
     const CAL_SHOW_AS = ['free', 'tentative', 'busy', 'oof', 'workingElsewhere'];
     const CAL_SENSITIVITY = ['normal', 'personal', 'private', 'confidential'];
+    // Identifiants Graph de l'agenda : les mêmes que la fonction « rencontres » d'AppDSI, c'est-à-dire l'application Azure AD (azure_ad_settings,
+    // qui a le droit Calendars.ReadWrite) et, à défaut, celle du collecteur mail (o365_settings, souvent limitée à la lecture des messages).
+    async function calendarToken() {
+        let s = await db.get('SELECT * FROM azure_ad_settings WHERE id = 1');
+        if (!s || !s.is_enabled || !s.client_id || !s.client_secret || !s.tenant_id) s = await db.get('SELECT * FROM o365_settings WHERE id = 1 AND is_enabled = 1');
+        if (!s || !s.client_id || !s.client_secret || !s.tenant_id) { const e = new Error('Aucun identifiant Microsoft configuré pour l\'agenda (azure_ad_settings ou o365_settings)'); e.status = 503; throw e; }
+        const tokenRes = await axios.post(`https://login.microsoftonline.com/${s.tenant_id}/oauth2/v2.0/token`, new URLSearchParams({
+            client_id: s.client_id, grant_type: 'client_credentials', scope: 'https://graph.microsoft.com/.default', client_secret: s.client_secret
+        }));
+        return tokenRes.data.access_token;
+    }
     const calMailbox = (req) => {
         const mailbox = String((req.body && req.body.mailbox) || (req.query && req.query.mailbox) || '').trim();
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mailbox)) { const e = new Error('mailbox : adresse e-mail de la boîte à modifier obligatoire'); e.status = 400; throw e; }
@@ -726,7 +737,7 @@ module.exports = (app, db, authenticateAdmin) => {
             if (b.showAs) event.showAs = b.showAs;
             if (b.sensitivity) event.sensitivity = b.sensitivity;
             if (Array.isArray(b.categories)) event.categories = b.categories.map(String).slice(0, 10);
-            const { token } = await o365Context({ query: { mailbox }, body: {} });
+            const token = await calendarToken();
             const r = await axios.post(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/events`, event,
                 { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } });
             res.status(201).json({ id: r.data.id });
@@ -751,7 +762,7 @@ module.exports = (app, db, authenticateAdmin) => {
     proxyRouter.delete('/o365/calendar/events/:id', verifyApiKey, async (req, res) => {
         try {
             const mailbox = calMailbox(req);
-            const { token } = await o365Context({ query: { mailbox }, body: {} });
+            const token = await calendarToken();
             await axios.delete(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/events/${encodeURIComponent(req.params.id)}`,
                 { headers: { Authorization: `Bearer ${token}` } });
             res.status(204).end();

@@ -21,11 +21,13 @@ const APPS = {
     'CLE-AGENDA': { id: 1, name: 'Suivi des congés', api_key: 'CLE-AGENDA', is_active: 1, authorized_routes: JSON.stringify(['o365_calendar']) },
     'CLE-MAIL': { id: 2, name: 'Autre', api_key: 'CLE-MAIL', is_active: 1, authorized_routes: JSON.stringify(['mail_send']) },
 };
+let azureEnabled = true;
 const fakeDb = {
     async get(sql, params) {
         if (/security_settings/.test(sql)) return { trust_proxies_enabled: 0 };
         if (/external_apps/.test(sql)) return APPS[params[0]];
-        if (/o365_settings/.test(sql)) return { tenant_id: 'T', client_id: 'C', client_secret: 'S', mailbox: 'collecte@ville.fr', is_enabled: 1 };
+        if (/azure_ad_settings/.test(sql)) return azureEnabled ? { is_enabled: 1, tenant_id: 'T', client_id: 'CLIENT-AZURE', client_secret: 'S-AZURE' } : { is_enabled: 0, tenant_id: 'T', client_id: 'CLIENT-AZURE', client_secret: 'S-AZURE' };
+        if (/o365_settings/.test(sql)) return { tenant_id: 'T', client_id: 'CLIENT-MAIL', client_secret: 'S-MAIL', mailbox: 'collecte@ville.fr', is_enabled: 1 };
         return null;
     },
     async all() { return []; },
@@ -41,7 +43,7 @@ test.before(async () => {
     base = `http://127.0.0.1:${server.address().port}/api/v1`;
 });
 test.after(() => server.close());
-test.beforeEach(() => { graphCalls.length = 0; graphDeleteError = null; });
+test.beforeEach(() => { graphCalls.length = 0; graphDeleteError = null; azureEnabled = true; });
 
 const call = (method, path, key, body) => fetch(base + path, {
     method, headers: { 'Content-Type': 'application/json', ...(key ? { 'X-API-KEY': key } : {}) }, body: body ? JSON.stringify(body) : undefined,
@@ -93,4 +95,15 @@ test('suppression : 204 ; boîte obligatoire ; événement déjà supprimé : 40
     graphDeleteError = Object.assign(new Error('introuvable'), { response: { status: 404, data: { error: { message: 'The specified object was not found in the store.' } } } });
     r = await call('DELETE', '/o365/calendar/events/EV-999?mailbox=agent@ville.fr', 'CLE-AGENDA');
     assert.strictEqual(r.status, 404);
+});
+
+test("agenda : le jeton vient de l'application Azure AD (comme les rencontres d'AppDSI), à défaut de celle du collecteur mail", async () => {
+    await call('POST', '/o365/calendar/events', 'CLE-AGENDA', EVENT);
+    let token = graphCalls.find((c) => c.url.includes('oauth2'));
+    assert.strictEqual(token.body.get('client_id'), 'CLIENT-AZURE');
+    graphCalls.length = 0;
+    azureEnabled = false;                                                 // application Azure AD désactivée : repli sur o365_settings
+    await call('POST', '/o365/calendar/events', 'CLE-AGENDA', EVENT);
+    token = graphCalls.find((c) => c.url.includes('oauth2'));
+    assert.strictEqual(token.body.get('client_id'), 'CLIENT-MAIL');
 });
