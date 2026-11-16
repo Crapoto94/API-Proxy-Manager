@@ -11,6 +11,11 @@ axios.post = async (url, body, opts) => {
     graphCalls.push({ method: 'POST', url, body, headers: opts && opts.headers });
     return url.includes('oauth2') ? { data: { access_token: 'JETON-GRAPH' } } : { data: { id: 'EV-123' } };
 };
+const graphPages = [];
+axios.get = async (url, opts) => {
+    graphCalls.push({ method: 'GET', url, params: opts && opts.params, headers: opts && opts.headers });
+    return { data: graphPages.shift() || { value: [] } };
+};
 axios.delete = async (url, opts) => {
     graphCalls.push({ method: 'DELETE', url, headers: opts && opts.headers });
     if (graphDeleteError) throw graphDeleteError;
@@ -106,4 +111,22 @@ test("agenda : le jeton vient de l'application Azure AD (comme les rencontres d'
     await call('POST', '/o365/calendar/events', 'CLE-AGENDA', EVENT);
     token = graphCalls.find((c) => c.url.includes('oauth2'));
     assert.strictEqual(token.body.get('client_id'), 'CLIENT-MAIL');
+});
+
+test('liste : événements de la période (pagination suivie), seuls id/sujet/horaires/disponibilité sont retournés, boîte et dates obligatoires', async () => {
+    graphCalls.length = 0;
+    graphPages.push({ value: [{ id: 'A', subject: 'ABSENT', start: { dateTime: '2026-10-26T00:00:00' }, end: { dateTime: '2026-10-27T00:00:00' }, showAs: 'oof', body: 'secret' }], '@odata.nextLink': 'https://graph.microsoft.com/v1.0/next-page' });
+    graphPages.push({ value: [{ id: 'B', subject: 'ABSENT', start: { dateTime: '2026-10-28T00:00:00' }, end: { dateTime: '2026-10-29T00:00:00' }, showAs: 'tentative' }] });
+    let r = await call('GET', '/o365/calendar/events?mailbox=agent@ville.fr&start=2026-01-01&end=2027-12-31', 'CLE-AGENDA');
+    assert.strictEqual(r.status, 200);
+    const body = await r.json();
+    assert.deepStrictEqual(body.events.map((e) => e.id), ['A', 'B']);
+    assert.strictEqual(JSON.stringify(body).includes('secret'), false);
+    const gets = graphCalls.filter((c) => c.method === 'GET');
+    assert.strictEqual(gets[0].url, 'https://graph.microsoft.com/v1.0/users/agent%40ville.fr/calendarView');
+    assert.strictEqual(gets[1].url, 'https://graph.microsoft.com/v1.0/next-page');
+    r = await call('GET', '/o365/calendar/events?start=2026-01-01&end=2027-12-31', 'CLE-AGENDA');
+    assert.strictEqual(r.status, 400);
+    r = await call('GET', '/o365/calendar/events?mailbox=agent@ville.fr', 'CLE-AGENDA');
+    assert.strictEqual(r.status, 400);
 });

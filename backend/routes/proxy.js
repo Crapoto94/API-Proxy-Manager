@@ -746,6 +746,40 @@ module.exports = (app, db, authenticateAdmin) => {
 
     /**
      * @openapi
+     * /api/v1/o365/calendar/events:
+     *   get:
+     *     tags: [Proxy APIs (External)]
+     *     summary: Liste les événements d'une période dans l'agenda d'une boîte Office 365
+     *     description: Permission `o365_calendar`. La boîte (`mailbox`) est obligatoire. Retourne uniquement id, subject, start, end et showAs (les événements supprimés n'y figurent pas).
+     *     security: [ { ApiKeyAuth: [] } ]
+     *     parameters:
+     *       - { in: query, name: mailbox, required: true, schema: { type: string } }
+     *       - { in: query, name: start, required: true, schema: { type: string, example: '2026-01-01T00:00:00' } }
+     *       - { in: query, name: end, required: true, schema: { type: string, example: '2027-12-31T23:59:59' } }
+     *     responses:
+     *       200: { description: 'Liste : { events: [ { id, subject, start, end, showAs } ] }' }
+     */
+    proxyRouter.get('/o365/calendar/events', verifyApiKey, async (req, res) => {
+        try {
+            const mailbox = calMailbox(req);
+            const re = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$/;
+            const start = String(req.query.start || ''), end = String(req.query.end || '');
+            if (!re.test(start) || !re.test(end)) { const e = new Error('start et end : AAAA-MM-JJ ou AAAA-MM-JJTHH:MM:SS obligatoires'); e.status = 400; throw e; }
+            const token = await calendarToken();
+            let url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/calendarView`;
+            let params = { startDateTime: start.length === 10 ? start + 'T00:00:00' : start, endDateTime: end.length === 10 ? end + 'T23:59:59' : end, $select: 'id,subject,start,end,showAs', $top: 200 };
+            const events = [];
+            for (let page = 0; page < 50 && url; page++) {
+                const r = await axios.get(url, { params, headers: { Authorization: `Bearer ${token}`, Prefer: 'outlook.timezone="Europe/Paris"' } });
+                for (const ev of (r.data.value || [])) events.push({ id: ev.id, subject: ev.subject, start: ev.start && ev.start.dateTime, end: ev.end && ev.end.dateTime, showAs: ev.showAs });
+                url = r.data['@odata.nextLink'] || null; params = undefined;
+            }
+            res.json({ events });
+        } catch (error) { o365Error(res, error); }
+    });
+
+    /**
+     * @openapi
      * /api/v1/o365/calendar/events/{id}:
      *   delete:
      *     tags: [Proxy APIs (External)]
